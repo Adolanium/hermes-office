@@ -265,8 +265,12 @@ function savePref(key, value) {
   }
 }
 
+function outputText(bot) {
+  return (bot.last_session?.preview || '').trim()
+}
+
 function previewLine(bot) {
-  const text = (bot.last_session?.preview || '').trim()
+  const text = outputText(bot)
   if (!text) {
     return 'Waiting for a task'
   }
@@ -985,7 +989,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
     peek: peek && !seat,
     think
   })
-  const note = stickyText(bot)
+  const output = outputText(bot)
 
   return jsxs('div', {
     className: cn(
@@ -1003,7 +1007,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
         children: [
           jsx('div', { className: 'office-desk-top' }),
           night ? jsx('div', { className: 'office-lamp', 'aria-hidden': true }) : null,
-          jsx(Monitor, { on: think, note, color: look.color }),
+          jsx(Monitor, { on: think, text: output }),
           seat
             ? jsx('div', { className: cn('office-empty-chair', 'is-wobble'), 'aria-hidden': true })
             : jsx(Person, {
@@ -1029,10 +1033,18 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
         title: `Give ${look.title} a task. Double-click to open their chat.`,
         children: [
           jsx('div', { className: 'office-name', children: look.title }),
-          jsx('div', { className: 'office-handle', children: `@${handle}` }),
-          jsx('div', { className: 'office-preview', children: previewLine(bot) })
+          jsx('div', { className: 'office-handle', children: `@${handle}` })
         ]
       }),
+      output
+        ? jsx('button', {
+            type: 'button',
+            className: 'office-say',
+            onClick: onOpen,
+            title: `Open ${look.title}'s chat`,
+            children: output
+          })
+        : null,
       picked
         ? jsx('button', {
             type: 'button',
@@ -1053,7 +1065,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   })
 }
 
-function Monitor({ on, note, color }) {
+function Monitor({ on, text }) {
   return jsxs('div', {
     className: 'office-monitor',
     'aria-hidden': true,
@@ -1061,11 +1073,11 @@ function Monitor({ on, note, color }) {
       jsxs('div', {
         className: 'office-monitor-head',
         children: [
-          jsx('div', { className: cn('office-screen', on && 'is-on') }),
-          jsx('div', { className: 'office-monitor-cam' }),
-          note
-            ? jsx('div', { className: 'office-sticky', style: { background: color }, children: note })
-            : null
+          jsx('div', {
+            className: cn('office-screen', on && 'is-on', text && 'has-copy'),
+            children: text ? jsx('div', { className: 'office-screen-copy', children: text }) : null
+          }),
+          jsx('div', { className: 'office-monitor-cam' })
         ]
       }),
       jsx('div', { className: 'office-monitor-neck' }),
@@ -1620,12 +1632,13 @@ function injectOfficeCss() {
 .office-lamp { position:absolute; top:40px; right:16px; width:8px; height:8px; border-radius:99px; background:#ffb14a; box-shadow:0 0 16px 6px color-mix(in srgb, #ffb14a 55%, transparent); z-index:2; pointer-events:none; }
 .office-monitor { position:relative; z-index:2; display:flex; flex-direction:column; align-items:center; width:62px; margin-top:2px; pointer-events:none; }
 .office-monitor-head { position:relative; width:58px; height:40px; padding:5px 5px 8px; border-radius:5px 5px 3px 3px; background:linear-gradient(180deg, #55575d, #2c2e33); box-shadow: inset 0 1px 0 #7a7c82, 0 1px 0 #1a1b1e, 0 2px 4px color-mix(in srgb, #000 28%, transparent); }
-.office-screen { width:100%; height:100%; border-radius:2px; background:#121316; box-shadow: inset 0 0 0 1px #0a0a0c; }
-.office-screen.is-on { background:linear-gradient(180deg, var(--ui-accent), color-mix(in srgb, var(--ui-accent) 45%, #111)); animation:office-glow 1.1s ease-in-out infinite; }
+.office-screen { width:100%; height:100%; border-radius:2px; background:#121316; box-shadow: inset 0 0 0 1px #0a0a0c; overflow:hidden; }
+.office-screen.is-on { background:linear-gradient(180deg, color-mix(in srgb, var(--ui-accent) 70%, #1a1a22), #121316); animation:office-glow 1.1s ease-in-out infinite; }
+.office-screen-copy { height:100%; overflow:hidden; padding:2px 3px 1px; font-size:5.5px; line-height:1.25; letter-spacing:0; color:#c9d4c4; text-align:left; word-break:break-word; }
+.office-screen.is-on .office-screen-copy { color:#eef2ff; }
 .office-monitor-cam { position:absolute; left:50%; bottom:2.5px; width:3px; height:3px; margin-left:-1.5px; border-radius:99px; background:#141416; box-shadow:0 0 0 1px #4a4c52; }
 .office-monitor-neck { width:7px; height:7px; background:linear-gradient(180deg, #3e4046, #2a2c30); }
 .office-monitor-base { width:24px; height:4px; border-radius:3px 3px 1px 1px; background:linear-gradient(180deg, #45474d, #2a2c30); box-shadow:0 1px 1px color-mix(in srgb, #000 30%, transparent); }
-.office-sticky { position:absolute; left:36px; top:-8px; width:28px; min-height:22px; padding:2px 3px; font-size:6px; line-height:1.15; color:#1a1208; border-radius:1px 1px 2px 0; transform:rotate(8deg); overflow:hidden; }
 .office-empty-chair { width:42px; height:42px; margin-top:-8px; border-radius:12px; background:color-mix(in srgb, var(--ui-stroke-secondary) 70%, #bbb); box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 18%, transparent); position:relative; z-index:3; }
 .office-stage .office-person { margin-top:-10px; z-index:3; }
 .office-empty-chair.is-wobble { animation:office-wobble .5s ease-in-out 2; }
@@ -1646,10 +1659,12 @@ function injectOfficeCss() {
 .office-status.is-idle { color:var(--ui-text-quaternary); }
 .office-person.is-shy .office-status, .office-person.is-held .office-status { color:#f09; }
 .office-whisper { position:absolute; top:-14px; right:-6px; font-size:12px; color:var(--ui-text-secondary); background:color-mix(in srgb, var(--ui-bg) 80%, #fff); border-radius:8px; padding:0 5px; }
-.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:8px; background:color-mix(in srgb, var(--ui-bg) 78%, transparent); color:inherit; text-align:center; cursor:pointer; }
+.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:8px; background:transparent; color:inherit; text-align:center; cursor:pointer; }
 .office-name { font-size:13px; font-weight:600; color:var(--ui-text-primary, inherit); }
 .office-handle { font-size:11px; color:var(--ui-text-quaternary); }
-.office-preview { margin-top:4px; font-size:11px; line-height:1.3; color:var(--ui-text-tertiary); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.office-say { position:relative; z-index:2; width:100%; margin-top:2px; padding:8px 10px 9px; border:0; border-radius:12px; background:Canvas; color:CanvasText; font:inherit; font-size:12px; line-height:1.35; text-align:left; cursor:pointer; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; outline:1px solid var(--ui-stroke-secondary); box-shadow:0 1px 0 color-mix(in srgb, #000 10%, transparent), 0 8px 18px color-mix(in srgb, #000 12%, transparent); }
+.office-say:before { content:""; position:absolute; left:50%; top:-5px; width:9px; height:9px; margin-left:-4.5px; background:Canvas; border-left:1px solid var(--ui-stroke-secondary); border-top:1px solid var(--ui-stroke-secondary); transform:rotate(45deg); }
+.office-say:hover { outline-color:var(--ui-accent); }
 .office-home { margin-top:2px; border:0; background:transparent; color:var(--ui-text-quaternary); font-size:10px; cursor:pointer; }
 .office-desk.is-active .office-plate { outline:1px solid var(--ui-accent); }
 .office-desk.is-think .office-desk-top { box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, var(--ui-accent) 35%, transparent); }
