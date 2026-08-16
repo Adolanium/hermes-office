@@ -28,7 +28,6 @@ const ROSTER_KEY = [ID, 'roster']
 const META_NS = 'hermes-bots'
 const DRAG_PX = 8
 const SLEEP_HOLD_MS = 1200
-const $idleTurn = atom(false)
 const $seats = atom({})
 const $drag = atom(null)
 const $fx = atom({})
@@ -46,7 +45,7 @@ const jobPollers = new Map()
 let pluginCtx = null
 
 function useTurnBusy() {
-  return Boolean(useValue(host.state.busy || $idleTurn))
+  return Boolean(useValue(host.state.busy))
 }
 
 function usePulse(ms = 200) {
@@ -254,7 +253,17 @@ function pickBotChatRow(rows, pinned) {
     return titled.id
   }
 
-  return list[0]?.id || null
+  return null
+}
+
+function resolvePicked(roster, selected, activeProfile) {
+  const name = selected || activeProfile
+
+  if (name && roster.some(bot => bot.name === name)) {
+    return name
+  }
+
+  return roster[0]?.name || null
 }
 
 function savePref(key, value) {
@@ -358,6 +367,7 @@ function tickRoam(now, roomEl) {
   const walk = $walk.get()
   const roam = $roam.get()
   const nextRoam = { ...roam }
+  const nextSeats = { ...seats }
   let seatsDirty = false
   let roamDirty = false
 
@@ -377,14 +387,14 @@ function tickRoam(now, roomEl) {
     nextRoam[name] = { from, to, t0: now, ms: roamMs(from, to), rest: 500 + Math.random() * 700 }
     roamDirty = true
 
-    if (leg && seats[name] !== from) {
-      seats[name] = from
+    if (leg) {
+      nextSeats[name] = from
       seatsDirty = true
     }
   }
 
   for (const name of Object.keys(nextRoam)) {
-    if (!seats[name] && drag?.name !== name) {
+    if (!nextSeats[name] && drag?.name !== name) {
       delete nextRoam[name]
       roamDirty = true
     }
@@ -395,7 +405,7 @@ function tickRoam(now, roomEl) {
   }
 
   if (seatsDirty) {
-    saveSeats({ ...seats })
+    saveSeats(nextSeats)
   }
 }
 
@@ -860,6 +870,14 @@ function Person({ bot, look, face, wander, closer, whisper, style, onPetStart })
     onPointerEnter: onPetStart.onEnter,
     onPointerLeave: onPetStart.onLeave,
     onPointerDown: onPetStart.onDown,
+    onKeyDown: event => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return
+      }
+
+      event.preventDefault()
+      onPetStart.onActivate?.()
+    },
     children: [
       face === 'pet' || face === 'clap'
         ? jsxs('div', { className: 'office-hearts', 'aria-hidden': true, children: [jsx('span', { children: '♥' }), jsx('span', { children: '♥' }), jsx('span', { children: '♥' })] })
@@ -902,7 +920,6 @@ function usePersonHandlers(bot, roomRef, held) {
     shy,
     pet,
     handlers: {
-      isActive: false,
       onEnter: () => {
         setShy(true)
         tap()
@@ -912,6 +929,7 @@ function usePersonHandlers(bot, roomRef, held) {
           setShy(false)
         }
       },
+      onActivate: () => burstPet(),
       onDown: event => {
         if (event.button !== 0) {
           return
@@ -948,11 +966,18 @@ function usePersonHandlers(bot, roomRef, held) {
           window.removeEventListener('pointermove', move)
           window.removeEventListener('pointerup', up)
           clearTimeout(sleepRef.current)
+          const start = startRef.current
           startRef.current = null
           const dragged = Boolean($drag.get() && $drag.get().name === bot.name)
+          const moved = movedEnough(start, { x: ev.clientX, y: ev.clientY })
 
-          if (!dragged) {
-            burstPet()
+          if (!moved) {
+            if (dragged) {
+              $drag.set(null)
+              patchFx(bot.name, { nap: false })
+            } else {
+              burstPet()
+            }
             return
           }
 
@@ -1006,7 +1031,17 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
         className: 'office-stage',
         children: [
           jsx('div', { className: 'office-desk-top' }),
-          night ? jsx('div', { className: 'office-lamp', 'aria-hidden': true }) : null,
+          night
+            ? jsxs('div', {
+                className: 'office-lamp',
+                'aria-hidden': true,
+                children: [
+                  jsx('div', { className: 'office-lamp-shade' }),
+                  jsx('div', { className: 'office-lamp-stem' }),
+                  jsx('div', { className: 'office-lamp-base' })
+                ]
+              })
+            : null,
           jsx(Monitor, { on: think, text: output }),
           seat
             ? jsx('div', { className: cn('office-empty-chair', 'is-wobble'), 'aria-hidden': true })
@@ -1138,7 +1173,8 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
   })
 }
 
-function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef, now }) {
+function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
+  const now = usePulse(16)
   const seats = useValue($seats)
   const drag = useValue($drag)
   const walk = useValue($walk)
@@ -1318,14 +1354,15 @@ function BotPicker({ roster, bot, look }) {
   })
 }
 
-function TaskBar({ roster }) {
+function TaskBar({ roster, activeProfile }) {
   const selected = useValue($selected)
   const focusToken = useValue($focusTask)
   const jobs = useValue($jobs)
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const inputRef = useRef(null)
-  const bot = roster.find(row => row.name === selected) || roster[0] || null
+  const picked = resolvePicked(roster, selected, activeProfile)
+  const bot = roster.find(row => row.name === picked) || null
   const look = bot ? botLook(bot) : null
   const sending = Boolean(bot && jobs[bot.name])
 
@@ -1403,15 +1440,15 @@ function OfficeFloor() {
   const turnBusy = useTurnBusy()
   const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
   useValue($avatars)
-  const now = usePulse(16)
+  const now = usePulse(200)
   const night = isNightHour(new Date(now))
   const peek = useValue($peekUntil) > now
   const walk = useValue($walk)
   const jobs = useValue($jobs)
-  const selected = useValue($selected) || activeProfile
   const roomRef = useRef(null)
   const prevBusy = useRef(false)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
+  const selected = resolvePicked(roster, useValue($selected), activeProfile)
   const working = roster.filter(
     bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs[bot.name]) }) === 'think'
   )
@@ -1457,7 +1494,7 @@ function OfficeFloor() {
       return
     }
 
-    if (mark.contains('office-room') || mark.contains('office-grid') || mark.contains('office-wall')) {
+    if (mark.contains('office-room') || mark.contains('office-grid')) {
       $peekUntil.set(Date.now() + 900)
     }
   }
@@ -1532,14 +1569,13 @@ function OfficeFloor() {
                         isActiveName: activeProfile,
                         turnBusy,
                         jobs,
-                        roomRef,
-                        now
+                        roomRef
                       })
                     ]
                   })
         ]
       }),
-      roster.length ? jsx(TaskBar, { roster }) : null
+      roster.length ? jsx(TaskBar, { roster, activeProfile }) : null
     ]
   })
 }
@@ -1629,7 +1665,11 @@ function injectOfficeCss() {
 .office-desk { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 10px 10px; border:0; background:transparent; color:inherit; text-align:center; user-select:none; -webkit-user-drag:none; }
 .office-stage { position:relative; width:100%; min-height:118px; display:flex; flex-direction:column; align-items:center; }
 .office-desk-top { position:absolute; left:8px; right:8px; top:48px; height:34px; border-radius:6px; background:#8d623e; box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, #000 20%, transparent); outline:1px solid color-mix(in srgb, #000 22%, transparent); z-index:1; pointer-events:none; }
-.office-lamp { position:absolute; top:40px; right:16px; width:8px; height:8px; border-radius:99px; background:#ffb14a; box-shadow:0 0 16px 6px color-mix(in srgb, #ffb14a 55%, transparent); z-index:2; pointer-events:none; }
+.office-lamp { position:absolute; top:24px; right:10px; width:18px; height:30px; display:flex; flex-direction:column; align-items:center; z-index:2; pointer-events:none; }
+.office-lamp-shade { width:16px; height:9px; background:linear-gradient(180deg, #b56a24, #e29a3a); clip-path:polygon(18% 0, 82% 0, 100% 100%, 0 100%); border-radius:1px; box-shadow:0 5px 10px 2px color-mix(in srgb, #ffb14a 50%, transparent); position:relative; }
+.office-lamp-shade:after { content:""; position:absolute; left:2px; right:2px; bottom:-1px; height:3px; background:#ffe7b0; opacity:.8; filter:blur(1px); }
+.office-lamp-stem { width:2px; height:14px; margin-top:-1px; background:linear-gradient(180deg, #6a5644, #3d3228); }
+.office-lamp-base { width:9px; height:3px; margin-top:-1px; border-radius:2px 2px 1px 1px; background:#4a3b2e; box-shadow:0 1px 0 #2a2118; }
 .office-monitor { position:relative; z-index:2; display:flex; flex-direction:column; align-items:center; width:62px; margin-top:2px; pointer-events:none; }
 .office-monitor-head { position:relative; width:58px; height:40px; padding:5px 5px 8px; border-radius:5px 5px 3px 3px; background:linear-gradient(180deg, #55575d, #2c2e33); box-shadow: inset 0 1px 0 #7a7c82, 0 1px 0 #1a1b1e, 0 2px 4px color-mix(in srgb, #000 28%, transparent); }
 .office-screen { width:100%; height:100%; border-radius:2px; background:#121316; box-shadow: inset 0 0 0 1px #0a0a0c; overflow:hidden; }
@@ -1730,6 +1770,16 @@ const plugin = {
       /* no storage */
     }
 
+    try {
+      ctx.onDispose?.(() => {
+        for (const name of [...jobPollers.keys()]) {
+          clearJob(name)
+        }
+      })
+    } catch {
+      /* older shell */
+    }
+
     ctx.register({
       id: 'page',
       area: ROUTES_AREA,
@@ -1779,6 +1829,7 @@ export const __test = {
   clockHands,
   nextClockKind,
   pickBotChatRow,
+  resolvePicked,
   roamMs,
   easeInOut
 }

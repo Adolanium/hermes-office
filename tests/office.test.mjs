@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked };`,
     context
   )
 
@@ -43,8 +43,17 @@ test('pickBotChatRow keeps the pinned Bot Chat when it still exists', () => {
 
   assert.equal(pickBotChatRow(rows, 'forever'), 'forever')
   assert.equal(pickBotChatRow(rows, 'gone'), 'forever')
-  assert.equal(pickBotChatRow([{ id: 'only', title: 'Other' }], null), 'only')
+  assert.equal(pickBotChatRow([{ id: 'only', title: 'Other' }], null), null)
   assert.equal(pickBotChatRow([], 'gone'), null)
+})
+
+test('resolvePicked matches the task bar to the outlined desk', () => {
+  const { resolvePicked } = loadHelpers()
+  const roster = [{ name: 'default' }, { name: 'scout' }]
+
+  assert.equal(resolvePicked(roster, null, 'scout'), 'scout')
+  assert.equal(resolvePicked(roster, 'default', 'scout'), 'default')
+  assert.equal(resolvePicked(roster, 'gone', 'also-gone'), 'default')
 })
 
 test('displayName prefers a custom title and calls default Hermes', () => {
