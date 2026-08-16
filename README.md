@@ -8,9 +8,20 @@ Uses the same live data Bot Mode already uses:
 - `ui_meta.hermes-bots` for names and avatars
 - `host.state.busy` for a real live turn
 - `host.state.profile` so only the focused bot thinks
-- `host.openSession` / `host.newChat` to open a chat
+- `host.openSession` / `prompt.submit` into that bot's Bot Chat session
 
-While a bot is working, their monitor lights up and their face rocks. Click a desk to jump into that chat.
+While a bot is working, their monitor lights up and their face rocks.
+
+Give them a task from the bar at the bottom. It goes into the same forever **Bot Chat** Bot Mode already uses, so the history stays one conversation. Click a nameplate to pick who gets it. Double-click, or hit **open chat**, to jump into that same session.
+
+Cute bits on the floor:
+
+- Hover a face and they flinch. Tap to pet. Hold still and they fall asleep in your hand.
+- Drag them around. After you put them down they keep wandering. Drop two close together and they whisper.
+- **Back to desk** is the only thing that sends them home. The empty chair wobbles.
+- Click the carpet and everyone peeks.
+- After 7pm the room goes night and desk lamps warm up.
+- The plant leans when someone thinks. The clock ticks in 24 hour time. Click it to flip digital and analog. Drag it to move.
 
 ## Install
 
