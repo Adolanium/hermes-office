@@ -32,13 +32,233 @@ const $seats = atom({})
 const $drag = atom(null)
 const $fx = atom({})
 const $peekUntil = atom(0)
-const $walk = atom(null)
+const $walks = atom({})
 const $roam = atom({})
 const $clockKind = atom('digital')
 const $clockPos = atom(null)
 const $selected = atom(null)
 const $focusTask = atom(0)
 const $jobs = atom({})
+const $backdrop = atom('carpet')
+const $game = atom(null)
+const $pizza = atom({ winner: null, at: 0 })
+const PIZZA_MS = 14000
+
+// Room skins. Every skin is a flat wall band plus a seamless floor tile, drawn
+// as tiny SVGs and embedded as data URIs (Hermes loads plugin.js through a blob
+// URL, so sibling image files are not served). Nothing here has a vanishing
+// point: the paper-doll sprites and CSS desks sit on this floor, so the floor
+// has to be the same flat plane they are.
+const WALL_H = 86
+
+function svgUri(svg) {
+  const flat = svg.replace(/\s+/g, ' ').replace(/> </g, '><').trim()
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(flat)}`
+}
+
+function svgTile(width, height, body) {
+  return svgUri(`<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>${body}</svg>`)
+}
+
+function speckle(points, fill, r = 1) {
+  return `<g fill='${fill}'>${points.map(([x, y]) => `<circle cx='${x}' cy='${y}' r='${r}'/>`).join('')}</g>`
+}
+
+// Running bond bricks. Tile width must be a multiple of brick + joint and the
+// colour list must be exactly four long so the half-offset rows wrap cleanly.
+function brickRows(width, height, brick, joint, mortar, colors) {
+  const step = brick.w + joint
+  const rowH = brick.h + joint
+  let out = `<rect width='${width}' height='${height}' fill='${mortar}'/>`
+
+  for (let row = 0, y = 0; y < height; row++, y += rowH) {
+    const offset = row % 2 ? -Math.floor(step / 2) : 0
+    for (let i = 0, x = offset; x < width; i++, x += step) {
+      out += `<rect x='${x}' y='${y}' width='${brick.w}' height='${brick.h}' rx='1' fill='${colors[(row * 3 + i) % colors.length]}'/>`
+    }
+  }
+
+  return out
+}
+
+// Straight-on floorboards. Horizontal planks, staggered end joints, no taper.
+function plankRows(width, plankH, colors, seam, joints) {
+  let out = ''
+
+  colors.forEach((fill, row) => {
+    const y = row * plankH
+    out += `<rect x='0' y='${y}' width='${width}' height='${plankH}' fill='${fill}'/>`
+    out += `<rect x='0' y='${y}' width='${width}' height='1' fill='rgba(255,255,255,.14)'/>`
+    out += `<rect x='0' y='${y + plankH - 1}' width='${width}' height='1' fill='${seam}'/>`
+    out += `<rect x='${joints[row]}' y='${y}' width='2' height='${plankH}' fill='${seam}'/>`
+    out += `<rect x='${(joints[row] + 9) % width}' y='${y + 7}' width='26' height='1' fill='rgba(0,0,0,.09)'/>`
+    out += `<rect x='${(joints[row] + 61) % width}' y='${y + 15}' width='34' height='1' fill='rgba(0,0,0,.08)'/>`
+  })
+
+  return out
+}
+
+// Top-down dance floor. A fixed 4x4 pattern so the tile repeats without seams.
+function checkerTiles(cell, colors, grid) {
+  const map = [
+    [0, 1, 2, 1],
+    [1, 3, 1, 0],
+    [2, 1, 0, 1],
+    [1, 0, 1, 3]
+  ]
+  let out = ''
+
+  map.forEach((row, r) => {
+    row.forEach((c, i) => {
+      const x = i * cell
+      const y = r * cell
+      out += `<rect x='${x}' y='${y}' width='${cell}' height='${cell}' fill='${colors[c]}'/>`
+      out += `<rect x='${x + 2.5}' y='${y + 2.5}' width='${cell - 5}' height='${cell - 5}' fill='none' stroke='rgba(255,255,255,${c === 3 ? '.35' : '.1'})' stroke-width='1'/>`
+    })
+  })
+
+  const size = cell * 4
+  return `${out}<path d='M0 0h${size}M0 ${cell}h${size}M0 ${cell * 2}h${size}M0 ${cell * 3}h${size}M0 0v${size}M${cell} 0v${size}M${cell * 2} 0v${size}M${cell * 3} 0v${size}' stroke='${grid}' stroke-width='2'/>`
+}
+
+const OFFICE_SKINS = {
+  carpet: {
+    wallColor: '#ebe2d1',
+    wallSize: '160px 86px',
+    wall: svgTile(160, WALL_H, `
+      <rect width='160' height='86' fill='#ebe2d1'/>
+      ${speckle([[23, 14], [71, 38], [118, 22], [143, 49], [47, 51], [95, 9], [12, 44], [131, 8]], '#e1d6c2')}
+      <rect y='60' width='160' height='3' fill='#c9b99d'/>
+      <rect y='60' width='160' height='1' fill='#f7f1e4'/>
+      <rect y='63' width='160' height='17' fill='#dccfb7'/>
+      <g fill='#c6b699'><rect x='39' y='66' width='2' height='11'/><rect x='79' y='66' width='2' height='11'/><rect x='119' y='66' width='2' height='11'/><rect x='159' y='66' width='1' height='11'/><rect y='66' width='1' height='11'/></g>
+      <rect y='80' width='160' height='6' fill='#8a755b'/>
+      <rect y='80' width='160' height='1' fill='#aa937b'/>
+    `),
+    floorColor: '#587e8f',
+    floorSize: '96px 96px',
+    floor: svgTile(96, 96, `
+      <rect width='96' height='96' fill='#587e8f'/>
+      <rect x='48' width='48' height='48' fill='#557b8c'/>
+      <rect y='48' width='48' height='48' fill='#557b8c'/>
+      ${speckle([[6, 9], [21, 30], [39, 14], [30, 42], [11, 38], [58, 6], [70, 27], [88, 12], [79, 41], [63, 39], [9, 57], [27, 74], [41, 60], [18, 89], [36, 84], [55, 60], [73, 77], [89, 58], [66, 90], [84, 86], [46, 24], [90, 30], [2, 26], [70, 62], [14, 76]], '#668c9c')}
+      ${speckle([[16, 20], [33, 5], [75, 16], [52, 34], [24, 62], [4, 78], [92, 70], [60, 72], [44, 92], [80, 50], [38, 70], [86, 94]], '#4b6f80')}
+      <path d='M48.5 0v96M0 48.5h96' stroke='#4d7283' stroke-width='1'/>
+    `)
+  },
+  loft: {
+    wallColor: '#c9baa9',
+    wallSize: '120px 86px',
+    wall: svgTile(120, WALL_H, `
+      ${brickRows(120, 80, { w: 28, h: 12 }, 2, '#c9baa9', ['#b25b41', '#a75237', '#bc6448', '#9e4b33'])}
+      <rect y='80' width='120' height='6' fill='#45454b'/>
+      <rect y='80' width='120' height='1' fill='#6c6c74'/>
+    `),
+    floorColor: '#c99b64',
+    floorSize: '192px 96px',
+    floor: svgTile(192, 96, `
+      ${plankRows(192, 24, ['#cfa46c', '#c49862', '#d6ab74', '#bf915b'], '#8f6540', [40, 130, 88, 8])}
+      <ellipse cx='150' cy='11' rx='3' ry='2' fill='#a2774a'/><ellipse cx='150' cy='11' rx='1.2' ry='.8' fill='#7d552f'/>
+      <ellipse cx='58' cy='60' rx='2.6' ry='1.8' fill='#a2774a'/><ellipse cx='58' cy='60' rx='1' ry='.7' fill='#7d552f'/>
+    `)
+  },
+  garden: {
+    wallColor: '#bde0f4',
+    wallSize: '160px 86px',
+    wall: svgTile(160, WALL_H, `
+      <defs><linearGradient id='sky' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#a9d5f0'/><stop offset='1' stop-color='#dceff9'/></linearGradient></defs>
+      <rect width='160' height='86' fill='url(#sky)'/>
+      <g fill='#fff' opacity='.9'><ellipse cx='36' cy='22' rx='14' ry='6'/><ellipse cx='44' cy='18' rx='9' ry='6'/><ellipse cx='28' cy='19' rx='8' ry='5'/><ellipse cx='118' cy='34' rx='11' ry='5'/><ellipse cx='124' cy='31' rx='7' ry='5'/></g>
+      <g fill='#4c9440'><circle cx='0' cy='64' r='13'/><circle cx='22' cy='62' r='14'/><circle cx='44' cy='65' r='12'/><circle cx='66' cy='61' r='14'/><circle cx='88' cy='64' r='13'/><circle cx='110' cy='62' r='14'/><circle cx='132' cy='65' r='12'/><circle cx='154' cy='62' r='13'/></g>
+      <g fill='#63b04f'><circle cx='11' cy='58' r='9'/><circle cx='34' cy='56' r='9'/><circle cx='56' cy='58' r='9'/><circle cx='78' cy='55' r='9'/><circle cx='100' cy='58' r='9'/><circle cx='122' cy='56' r='9'/><circle cx='144' cy='58' r='9'/></g>
+      <rect y='66' width='160' height='14' fill='#3f7f36'/>
+      <g fill='#f7f4ea'>
+        <rect y='60' width='160' height='3' rx='1'/><rect y='72' width='160' height='3' rx='1'/>
+        <path d='M4 52l4 -5l4 5v28h-8zM24 52l4 -5l4 5v28h-8zM44 52l4 -5l4 5v28h-8zM64 52l4 -5l4 5v28h-8zM84 52l4 -5l4 5v28h-8zM104 52l4 -5l4 5v28h-8zM124 52l4 -5l4 5v28h-8zM144 52l4 -5l4 5v28h-8z'/>
+      </g>
+      <g fill='#d9d3c2'><rect x='10' y='52' width='2' height='28'/><rect x='30' y='52' width='2' height='28'/><rect x='50' y='52' width='2' height='28'/><rect x='70' y='52' width='2' height='28'/><rect x='90' y='52' width='2' height='28'/><rect x='110' y='52' width='2' height='28'/><rect x='130' y='52' width='2' height='28'/><rect x='150' y='52' width='2' height='28'/></g>
+      <rect y='80' width='160' height='6' fill='#6a4b30'/>
+      <rect y='80' width='160' height='1' fill='#8a6a48'/>
+    `),
+    floorColor: '#72b455',
+    floorSize: '144px 144px',
+    floor: svgTile(144, 144, `
+      <rect width='144' height='144' fill='#72b455'/>
+      <g fill='#69ac4d'><ellipse cx='30' cy='104' rx='20' ry='10'/><ellipse cx='110' cy='34' rx='18' ry='9'/><ellipse cx='126' cy='118' rx='14' ry='8'/></g>
+      <g stroke='#5a9a40' stroke-width='1.4' stroke-linecap='round'>
+        <path d='M8 12l2 -5M15 30l2 -5M31 8l-2 -5M40 40l2 -5M6 50l2 -5M52 58l2 -5M62 82l-2 -5M84 66l2 -5M90 44l-2 -5M70 6l2 -5M26 88l2 -5M46 76l-2 -5M78 90l2 -5M36 22l2 -5M58 34l-2 -5M12 66l-2 -5M104 12l2 -5M118 58l-2 -5M134 22l2 -5M96 96l2 -5M112 80l-2 -5M138 70l2 -5M20 122l2 -5M48 110l-2 -5M64 130l2 -5M88 118l2 -5M104 138l-2 -5M130 96l2 -5M6 138l2 -5M40 138l-2 -5'/>
+      </g>
+      <g stroke='#8fd06c' stroke-width='1.4' stroke-linecap='round'>
+        <path d='M22 18l2 -5M44 26l-2 -5M60 12l2 -5M80 32l2 -5M14 42l2 -5M30 60l-2 -5M52 90l2 -5M88 82l-2 -5M72 50l2 -5M92 10l-2 -5M4 92l2 -5M40 90l2 -5M110 20l2 -5M126 46l-2 -5M100 66l2 -5M140 88l2 -5M120 110l-2 -5M56 120l2 -5M76 138l-2 -5M28 132l2 -5M8 112l2 -5M136 130l-2 -5'/>
+      </g>
+      <g><circle cx='24' cy='46' r='2.4' fill='#fff'/><circle cx='28' cy='42' r='2.4' fill='#fff'/><circle cx='28' cy='50' r='2.4' fill='#fff'/><circle cx='32' cy='46' r='2.4' fill='#fff'/><circle cx='28' cy='46' r='2' fill='#f7c948'/></g>
+      <g><circle cx='104' cy='100' r='2.4' fill='#fff'/><circle cx='108' cy='96' r='2.4' fill='#fff'/><circle cx='108' cy='104' r='2.4' fill='#fff'/><circle cx='112' cy='100' r='2.4' fill='#fff'/><circle cx='108' cy='100' r='2' fill='#f7c948'/></g>
+      <g fill='#4f8f38'><circle cx='72' cy='72' r='2'/><circle cx='75' cy='69' r='2'/><circle cx='75' cy='75' r='2'/></g>
+      <g fill='#4f8f38'><circle cx='128' cy='16' r='2'/><circle cx='131' cy='13' r='2'/><circle cx='131' cy='19' r='2'/></g>
+    `)
+  },
+  nightclub: {
+    wallColor: '#1b1030',
+    wallSize: '160px 86px',
+    wall: svgTile(160, WALL_H, `
+      <rect width='160' height='86' fill='#1b1030'/>
+      ${speckle([[14, 12], [38, 30], [61, 8], [92, 22], [121, 14], [147, 36], [27, 44], [76, 40], [106, 46], [138, 6]], '#f9a8d4', 1)}
+      ${speckle([[50, 20], [84, 10], [131, 28], [8, 34], [116, 40], [154, 18], [66, 48], [98, 4]], '#8fe9ff', 1)}
+      <rect y='58' width='160' height='9' fill='#ff4fb0' opacity='.18'/>
+      <rect y='61' width='160' height='3' rx='1.5' fill='#ff4fb0'/>
+      <rect y='62' width='160' height='1' fill='#ffd0ea'/>
+      <rect y='69' width='160' height='9' fill='#48e0ff' opacity='.16'/>
+      <rect y='72' width='160' height='3' rx='1.5' fill='#48e0ff'/>
+      <rect y='73' width='160' height='1' fill='#d8f8ff'/>
+      <rect y='80' width='160' height='6' fill='#0b0614'/>
+      <rect y='80' width='160' height='1' fill='#48e0ff' opacity='.5'/>
+    `),
+    floorColor: '#2c1656',
+    floorSize: '160px 160px',
+    floor: svgTile(160, 160, checkerTiles(40, ['#3a1a64', '#2c1656', '#4c1f74', '#7a2f8e'], '#0e0618'))
+  },
+  pizza: {
+    wallColor: '#f4e9d6',
+    wallSize: '160px 86px',
+    wall: svgTile(160, WALL_H, `
+      <rect width='160' height='86' fill='#f4e9d6'/>
+      <g fill='#c9302c'><rect width='20' height='16'/><rect x='40' width='20' height='16'/><rect x='80' width='20' height='16'/><rect x='120' width='20' height='16'/></g>
+      <g fill='#fbf5ea'><rect x='20' width='20' height='16'/><rect x='60' width='20' height='16'/><rect x='100' width='20' height='16'/><rect x='140' width='20' height='16'/></g>
+      <g fill='#c9302c'><circle cx='10' cy='16' r='10'/><circle cx='50' cy='16' r='10'/><circle cx='90' cy='16' r='10'/><circle cx='130' cy='16' r='10'/></g>
+      <g fill='#fbf5ea'><circle cx='30' cy='16' r='10'/><circle cx='70' cy='16' r='10'/><circle cx='110' cy='16' r='10'/><circle cx='150' cy='16' r='10'/></g>
+      <rect y='26' width='160' height='60' fill='#f4e9d6'/>
+      <rect y='26' width='160' height='3' fill='rgba(0,0,0,.12)'/>
+      <g stroke='#6a4a3a' stroke-width='1.2' fill='none'><path d='M0 36 Q20 44 40 36 T80 36 T120 36 T160 36'/></g>
+      <g fill='#f7d34a'><circle cx='10' cy='39' r='2.4'/><circle cx='30' cy='41' r='2.4'/><circle cx='50' cy='39' r='2.4'/><circle cx='70' cy='41' r='2.4'/><circle cx='90' cy='39' r='2.4'/><circle cx='110' cy='41' r='2.4'/><circle cx='130' cy='39' r='2.4'/><circle cx='150' cy='41' r='2.4'/></g>
+      <g fill='#c9302c'><rect y='64' width='16' height='16'/><rect x='32' y='64' width='16' height='16'/><rect x='64' y='64' width='16' height='16'/><rect x='96' y='64' width='16' height='16'/><rect x='128' y='64' width='16' height='16'/></g>
+      <g fill='#fbf5ea'><rect x='16' y='64' width='16' height='16'/><rect x='48' y='64' width='16' height='16'/><rect x='80' y='64' width='16' height='16'/><rect x='112' y='64' width='16' height='16'/><rect x='144' y='64' width='16' height='16'/></g>
+      <rect y='62' width='160' height='2' fill='#b89b7a'/>
+      <rect y='80' width='160' height='6' fill='#7a5238'/>
+      <rect y='80' width='160' height='1' fill='#a07858'/>
+    `),
+    floorColor: '#f1e6d4',
+    floorSize: '48px 48px',
+    floor: svgTile(48, 48, `
+      <rect width='48' height='48' fill='#f1e6d4'/>
+      <rect width='24' height='24' fill='#dc8f86'/>
+      <rect x='24' y='24' width='24' height='24' fill='#dc8f86'/>
+      <path d='M24.5 0v48M0 24.5h48M0 .5h48M.5 0v48' stroke='rgba(90,50,40,.14)' stroke-width='1'/>
+    `)
+  }
+}
+
+function skinCss(name, skin) {
+  const night = 'linear-gradient(rgba(9,11,42,.52), rgba(9,11,42,.52))'
+  const floor = `url("${skin.floor}") 0 ${WALL_H}px / ${skin.floorSize} repeat local`
+  const wall = `url("${skin.wall}") 0 0 / ${skin.wallSize} repeat-x`
+
+  return `
+.office-room.is-${name} { background: ${floor}, ${skin.floorColor}; }
+.office-room.is-${name} .office-wall { background: ${wall}, ${skin.wallColor}; }
+.office-root.is-night .office-room.is-${name} { background: ${night} 0 0 / auto repeat local, ${floor}, ${skin.floorColor}; }
+.office-root.is-night .office-room.is-${name} .office-wall { background: ${night}, ${wall}, ${skin.wallColor}; }`
+}
+
 const BOT_CHAT_TITLE = 'Bot Chat'
 const chatCreates = new Map()
 const jobPollers = new Map()
@@ -309,6 +529,218 @@ function roamMs(from, to) {
   return Math.max(1400, Math.min(4200, Math.sqrt(dx * dx + dy * dy) * 18))
 }
 
+function backdropNames() {
+  return ['carpet', 'loft', 'garden', 'nightclub', 'pizza']
+}
+
+function nextBackdrop(kind) {
+  const all = backdropNames()
+  const i = all.indexOf(kind)
+  return all[((i < 0 ? 0 : i) + 1) % all.length]
+}
+
+function idleBotNames(roster, jobs, activeProfile, turnBusy) {
+  return (Array.isArray(roster) ? roster : [])
+    .filter(
+      bot =>
+        deskMood({
+          isActive: bot.name === activeProfile,
+          turnBusy,
+          tasked: Boolean(jobs && jobs[bot.name])
+        }) === 'idle'
+    )
+    .map(bot => bot.name)
+}
+
+const FACE_HALF = 21
+
+function chairCountForGame(playerCount) {
+  return Math.max(0, (playerCount || 0) - 1)
+}
+
+function pickFreeStool(stools, taken, radius = 40) {
+  const seats = Array.isArray(stools) ? stools : []
+  const used = Array.isArray(taken) ? taken : []
+
+  if (!seats.length) {
+    return null
+  }
+
+  return seats.find(stool => !used.some(spot => near(stool, spot, radius))) || null
+}
+
+function nextBarStand(stools, taken, radius = 40) {
+  const free = pickFreeStool(stools, taken, radius)
+  if (free) {
+    return free
+  }
+
+  const seats = Array.isArray(stools) ? stools : []
+  const last = seats[seats.length - 1]
+
+  if (!last) {
+    return null
+  }
+
+  const n = (Array.isArray(taken) ? taken : []).length
+  return { id: `stand-${n}`, x: last.x - 20, y: last.y + 18 }
+}
+
+// Pizza parlor rule: one pizza on the counter per round. A round starts when
+// anyone is given a task. The first bot to finish and reach the counter takes
+// the slice, everyone after that gets "no pizza".
+function freshPizza(now) {
+  return { winner: null, at: now }
+}
+
+function claimPizza(pizza, name, now) {
+  const current = pizza || freshPizza(now)
+
+  if (current.winner) {
+    return { pizza: current, won: current.winner === name }
+  }
+
+  return { pizza: { winner: name, at: now }, won: true }
+}
+
+const CHAIR_PX = 30
+
+// Musical chairs live in the middle of the box, backs together in a small ring.
+// Positions are the chair's top-left; `gameRing` says how far out the players circle.
+function boxCenter(box) {
+  const area = box || { x0: 12, y0: 92, x1: 360, y1: 280 }
+  return { x: (area.x0 + area.x1) / 2, y: (area.y0 + area.y1) / 2 }
+}
+
+function chairRingRadius(count) {
+  return count <= 1 ? 0 : count === 2 ? 22 : 18 + count * 5
+}
+
+function placeChairs(n, box) {
+  const count = Math.max(0, n || 0)
+  const center = boxCenter(box)
+  const radius = chairRingRadius(count)
+  const chairs = []
+
+  for (let i = 0; i < count; i++) {
+    const angle = -Math.PI / 2 + (i / Math.max(1, count)) * Math.PI * 2
+    chairs.push({
+      id: `c${i}`,
+      x: Math.round(center.x + Math.cos(angle) * radius - CHAIR_PX / 2),
+      y: Math.round(center.y + Math.sin(angle) * radius - CHAIR_PX / 2)
+    })
+  }
+
+  return chairs
+}
+
+// Where the players walk while the music plays: a wider ring around the chairs.
+function gameRing(box, count) {
+  const center = boxCenter(box)
+  const area = box || { x0: 12, y0: 92, x1: 360, y1: 280 }
+  const room = Math.min((area.x1 - area.x0) / 2, (area.y1 - area.y0) / 2) - 26
+  const radius = Math.max(56, Math.min(chairRingRadius(count) + 84, room))
+  return { center, radius }
+}
+
+// Next stop on the ring: keep going clockwise from wherever the player is now.
+function ringPoint(ring, from, step = 0.9) {
+  const dx = (from?.x ?? ring.center.x) + FACE_HALF - ring.center.x
+  const dy = (from?.y ?? ring.center.y) + FACE_HALF - ring.center.y
+  const angle = Math.atan2(dy, dx) + step
+  return {
+    x: ring.center.x + Math.cos(angle) * ring.radius - FACE_HALF,
+    y: ring.center.y + Math.sin(angle) * ring.radius - FACE_HALF
+  }
+}
+
+function assignChairs(players, chairs) {
+  const people = Array.isArray(players) ? players : []
+  const seats = Array.isArray(chairs) ? chairs : []
+  const pairs = []
+
+  for (const person of people) {
+    for (const chair of seats) {
+      const dx = (person.x || 0) - (chair.x || 0)
+      const dy = (person.y || 0) - (chair.y || 0)
+      pairs.push({ name: person.name, chair, d: dx * dx + dy * dy })
+    }
+  }
+
+  pairs.sort((a, b) => a.d - b.d)
+
+  const assigned = {}
+  const usedP = new Set()
+  const usedC = new Set()
+
+  for (const pair of pairs) {
+    if (usedP.has(pair.name) || usedC.has(pair.chair.id)) {
+      continue
+    }
+
+    assigned[pair.name] = pair.chair
+    usedP.add(pair.name)
+    usedC.add(pair.chair.id)
+
+    if (usedC.size === seats.length) {
+      break
+    }
+  }
+
+  const leftover = people.map(p => p.name).find(name => !usedP.has(name)) || null
+  return { assigned, leftover }
+}
+
+function beginWalk(from, to, now, kind, path) {
+  const scale = kind === 'hopscotch' ? 0.5 : kind === 'chair' ? 0.55 : kind === 'bar' ? 0.68 : 0.72
+  return {
+    from,
+    to,
+    t0: now || 0,
+    ms: Math.max(420, roamMs(from, to) * scale),
+    kind: kind || 'home',
+    path: Array.isArray(path) ? path : []
+  }
+}
+
+function advanceWalk(walk, now) {
+  if (!walk) {
+    return { walk: null, done: true, arrived: false }
+  }
+
+  if ((now || 0) - walk.t0 < walk.ms) {
+    return { walk, done: false, arrived: false }
+  }
+
+  if (walk.path && walk.path.length) {
+    const next = walk.path[0]
+    return {
+      walk: beginWalk(walk.to, next, now, walk.kind, walk.path.slice(1)),
+      done: false,
+      arrived: false
+    }
+  }
+
+  return { walk: null, done: true, arrived: true, at: walk.to, kind: walk.kind }
+}
+
+function walkHop(raw, kind) {
+  const t = Math.max(0, Math.min(1, raw))
+  if (t >= 1) {
+    return 0
+  }
+
+  if (kind === 'hopscotch') {
+    return Math.abs(Math.sin(t * Math.PI)) * 12
+  }
+
+  if (kind === 'home' || kind === 'chair' || kind === 'bar') {
+    return Math.abs(Math.sin(t * Math.PI * 2)) * 7
+  }
+
+  return Math.abs(Math.sin(t * Math.PI * 3)) * 6
+}
+
 function roamBox(roomEl) {
   if (!roomEl) {
     return { x0: 12, y0: 92, x1: 360, y1: 280 }
@@ -357,34 +789,54 @@ function clearRoam(name) {
   $roam.set(next)
 }
 
-function tickRoam(now, roomEl) {
+function tickRoam(now, roomEl, opts = {}) {
   if (!roomEl) {
     return
   }
 
   const seats = $seats.get()
   const drag = $drag.get()
-  const walk = $walk.get()
+  const walks = $walks.get()
   const roam = $roam.get()
+  const jobs = opts.jobs || $jobs.get()
+  const game = $game.get()
+  const players = new Set(game?.players || [])
   const nextRoam = { ...roam }
   const nextSeats = { ...seats }
   let seatsDirty = false
   let roamDirty = false
+  const scramble = opts.scramble || false
+  const only = opts.only ? new Set(opts.only) : null
 
   for (const name of Object.keys(seats)) {
-    if (drag?.name === name || walk?.name === name) {
+    if (only && !only.has(name)) {
+      continue
+    }
+
+    if (drag?.name === name || walks[name]) {
+      continue
+    }
+
+    if (!scramble && (jobs[name] || players.has(name))) {
+      continue
+    }
+
+    const fx = $fx.get()[name] || {}
+    if (!scramble && (fx.lingerUntil || 0) > now) {
       continue
     }
 
     const leg = roam[name]
+    const rest = scramble ? 60 : leg?.rest || 0
 
-    if (leg && now - leg.t0 < leg.ms + (leg.rest || 0)) {
+    if (leg && now - leg.t0 < leg.ms + rest) {
       continue
     }
 
     const from = leg ? leg.to : seats[name]
-    const to = roamPoint(roomEl, from)
-    nextRoam[name] = { from, to, t0: now, ms: roamMs(from, to), rest: 500 + Math.random() * 700 }
+    const to = scramble && opts.ring ? ringPoint(opts.ring, from) : roamPoint(roomEl, from)
+    const ms = scramble ? Math.max(420, roamMs(from, to) * 0.42) : roamMs(from, to)
+    nextRoam[name] = { from, to, t0: now, ms, rest: scramble ? 60 + Math.random() * 80 : 500 + Math.random() * 700 }
     roamDirty = true
 
     if (leg) {
@@ -449,12 +901,18 @@ function patchFx(name, patch) {
 
 function readFx(name, now) {
   const row = $fx.get()[name] || {}
+  const lingering = (row.lingerUntil || 0) > now
   return {
     nap: Boolean(row.nap),
     clap: (row.clapUntil || 0) > now,
     stretch: (row.stretchUntil || 0) > now,
     closer: (row.closerUntil || 0) > now,
-    whisper: (row.whisperUntil || 0) > now
+    whisper: (row.whisperUntil || 0) > now,
+    cheers: Boolean(row.atBar) && lingering,
+    pizza: (row.pizzaUntil || 0) > now,
+    noPizza: (row.noPizzaUntil || 0) > now,
+    goHome: Boolean(row.goHome),
+    goBar: Boolean(row.goBar)
   }
 }
 
@@ -621,7 +1079,7 @@ function watchJob(name, chat) {
 
       if (!state?.inflight && !state?.running) {
         clearJob(name)
-        patchFx(name, { clapUntil: Date.now() + 1100, nap: false })
+        patchFx(name, { clapUntil: Date.now() + 1100, nap: false, goBar: true, goHome: false })
       }
     } catch {
       /* keep waiting */
@@ -676,12 +1134,13 @@ async function sendTask(bot, text) {
   }
 
   markJob(bot.name, chat)
-  patchFx(bot.name, { nap: false })
+  startRound(bot.name)
 
   try {
     await host.request('prompt.submit', { session_id: chat.runtime, text: task })
   } catch (err) {
     clearJob(bot.name)
+    patchFx(bot.name, { goHome: false })
     throw err
   }
 
@@ -701,8 +1160,11 @@ function dropBot(name, next, roomEl) {
   }
 
   $drag.set(null)
+  patchFx(name, { atBar: false, lingerUntil: 0 })
   saveSeats(seats)
-  setRoam(name, next, roomEl)
+  if (!$jobs.get()[name] && !$game.get()?.players?.includes(name)) {
+    setRoam(name, next, roomEl)
+  }
 }
 
 function roamPos(leg, now = Date.now()) {
@@ -717,38 +1179,404 @@ function roamPos(leg, now = Date.now()) {
   }
 }
 
-function startWalkHome(name, roomEl) {
-  const from = $drag.get()?.name === name
-    ? { x: $drag.get().x, y: $drag.get().y }
-    : roamPos($roam.get()[name]) || $seats.get()[name]
+function elPos(roomEl, el) {
+  if (!roomEl || !el) {
+    return null
+  }
+
+  const room = roomEl.getBoundingClientRect()
+  const box = el.getBoundingClientRect()
+  return {
+    x: box.left - room.left + roomEl.scrollLeft,
+    y: box.top - room.top + roomEl.scrollTop
+  }
+}
+
+// Seat coords are the top-left of a 42px face. Anchor a walker on an element
+// by centring the face on it horizontally; `lift` raises it so a body can
+// overlap a stool or chair instead of standing on its top edge.
+function faceOn(roomEl, el, lift = 0) {
+  const pos = elPos(roomEl, el)
+  if (!pos) {
+    return null
+  }
+
+  const box = el.getBoundingClientRect()
+  return {
+    x: pos.x + box.width / 2 - FACE_HALF,
+    y: pos.y + box.height / 2 - FACE_HALF - lift
+  }
+}
+
+function deskPersonPos(name, roomEl) {
+  const desk = roomEl?.querySelector(`[data-desk=${JSON.stringify(name)}]`)
+  const slot = desk?.querySelector('.office-person .office-face') || desk?.querySelector('.office-desk-chair') || desk
+  return faceOn(roomEl, slot)
+}
+
+function currentPos(name, roomEl, now = Date.now()) {
+  const drag = $drag.get()
+  if (drag?.name === name) {
+    return { x: drag.x, y: drag.y }
+  }
+
+  const walk = $walks.get()[name]
+  if (walk) {
+    return roamPos(walk, now)
+  }
+
+  const roam = $roam.get()[name]
+  if (roam) {
+    return roamPos(roam, now)
+  }
+
+  return $seats.get()[name] || deskPersonPos(name, roomEl)
+}
+
+function setWalk(name, walk) {
+  const next = { ...$walks.get() }
+
+  if (walk) {
+    next[name] = walk
+  } else {
+    delete next[name]
+  }
+
+  $walks.set(next)
+}
+
+function startWalk(name, to, roomEl, kind, path) {
+  const from = currentPos(name, roomEl)
   clearRoam(name)
+
+  if (!from || !to) {
+    return false
+  }
+
+  if ($drag.get()?.name === name) {
+    $drag.set(null)
+  }
+
+  const seats = { ...$seats.get(), [name]: from }
+  saveSeats(seats)
+  setWalk(name, beginWalk(from, to, Date.now(), kind, path))
+  return true
+}
+
+function startWalkHome(name, roomEl) {
+  if (!$seats.get()[name] && !$walks.get()[name] && $drag.get()?.name !== name) {
+    patchFx(name, { atBar: false, lingerUntil: 0, goHome: false })
+    return
+  }
+
+  const from = currentPos(name, roomEl)
+  clearRoam(name)
+  patchFx(name, { atBar: false, lingerUntil: 0, goHome: false })
 
   if (!from || !roomEl) {
     const next = { ...$seats.get() }
     delete next[name]
     saveSeats(next)
+    setWalk(name, null)
     return
   }
 
   const desk = roomEl.querySelector(`[data-desk=${JSON.stringify(name)}]`)
-  const slot = desk?.querySelector('.office-empty-chair') || desk
+  const slot = desk?.querySelector('.office-desk-chair') || desk
   if (!slot) {
     const next = { ...$seats.get() }
     delete next[name]
     saveSeats(next)
+    setWalk(name, null)
     return
   }
 
-  const room = roomEl.getBoundingClientRect()
-  const box = slot.getBoundingClientRect()
-  const to = { x: box.left - room.left, y: box.top - room.top }
-  $walk.set({
+  startWalk(name, faceOn(roomEl, slot), roomEl, 'home')
+}
+
+function stoolPoints(roomEl) {
+  if (!roomEl) {
+    return []
+  }
+
+  const els = roomEl.querySelectorAll('[data-stool]')
+  const points = [...els].map((el, i) => {
+    const pos = faceOn(roomEl, el, 12)
+    return pos ? { id: el.getAttribute('data-stool') || String(i), ...pos } : null
+  }).filter(Boolean)
+
+  if (points.length) {
+    return points
+  }
+
+  const box = roomEl.getBoundingClientRect()
+  return [0, 1, 2].map(i => ({
+    id: String(i),
+    x: Math.max(80, box.width - 92),
+    y: 118 + i * 52
+  }))
+}
+
+function takenBarPoints() {
+  const now = Date.now()
+  const taken = []
+
+  for (const [name, seat] of Object.entries($seats.get())) {
+    const row = $fx.get()[name] || {}
+    if ((row.lingerUntil || 0) > now) {
+      taken.push(seat)
+    }
+  }
+
+  for (const walk of Object.values($walks.get())) {
+    if (walk.kind === 'bar' && walk.to) {
+      taken.push(walk.to)
+    }
+  }
+
+  return taken
+}
+
+function startWalkToBar(name, roomEl) {
+  const existing = $walks.get()[name]
+  if (existing?.kind === 'bar') {
+    return
+  }
+
+  const fx = $fx.get()[name] || {}
+  if (fx.atBar && (fx.lingerUntil || 0) > Date.now()) {
+    return
+  }
+
+  const dest = nextBarStand(stoolPoints(roomEl), takenBarPoints())
+  if (!dest) {
+    return
+  }
+
+  startWalk(name, dest, roomEl, 'bar')
+}
+
+function hopscotchPoints(roomEl) {
+  if (!roomEl) {
+    return []
+  }
+
+  return [...roomEl.querySelectorAll('[data-hop]')]
+    .sort((a, b) => Number(a.getAttribute('data-hop')) - Number(b.getAttribute('data-hop')))
+    .map(el => faceOn(roomEl, el))
+    .filter(Boolean)
+}
+
+function startHopscotch(name, roomEl) {
+  if (!name || $jobs.get()[name] || $game.get()) {
+    return
+  }
+
+  const points = hopscotchPoints(roomEl)
+  if (points.length < 2) {
+    return
+  }
+
+  const [first, ...rest] = points
+  startWalk(name, first, roomEl, 'hopscotch', rest)
+}
+
+// Someone got a task: they walk home, and a fresh pizza lands on the counter.
+function startRound(name) {
+  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0 })
+  $pizza.set(freshPizza(Date.now()))
+}
+
+function finishWalk(name, walk) {
+  const seats = { ...$seats.get() }
+
+  if (walk.kind === 'home') {
+    delete seats[name]
+    saveSeats(seats)
+    return
+  }
+
+  if (walk.to) {
+    seats[name] = walk.to
+    saveSeats(seats)
+  }
+
+  if (walk.kind === 'bar') {
+    const now = Date.now()
+    patchFx(name, { atBar: true, lingerUntil: now + 4200, clapUntil: now + 1100, nap: false })
+
+    if ($backdrop.get() === 'pizza') {
+      const { pizza, won } = claimPizza($pizza.get(), name, now)
+      $pizza.set(pizza)
+      patchFx(name, won ? { pizzaUntil: now + PIZZA_MS, lingerUntil: now + 6000 } : { noPizzaUntil: now + 4200 })
+    }
+  }
+}
+
+function tickWalks(now) {
+  const walks = $walks.get()
+  let dirty = false
+  const next = { ...walks }
+
+  for (const [name, walk] of Object.entries(walks)) {
+    const step = advanceWalk(walk, now)
+    if (step.done) {
+      delete next[name]
+      finishWalk(name, walk)
+      dirty = true
+    } else if (step.walk && step.walk !== walk) {
+      next[name] = step.walk
+      dirty = true
+    }
+  }
+
+  if (dirty) {
+    $walks.set(next)
+  }
+}
+
+function flushGoFlags(roomEl) {
+  if (!roomEl) {
+    return
+  }
+
+  const fx = $fx.get()
+
+  for (const name of Object.keys(fx)) {
+    const row = fx[name]
+    if (row.goHome) {
+      patchFx(name, { goHome: false, atBar: false, lingerUntil: 0 })
+      startWalkHome(name, roomEl)
+    } else if (row.goBar) {
+      patchFx(name, { goBar: false })
+      startWalkToBar(name, roomEl)
+    }
+  }
+}
+
+function gameBox(roomEl) {
+  const box = roamBox(roomEl)
+  const bar = roomEl?.querySelector('.office-bar')
+
+  if (bar) {
+    const room = roomEl.getBoundingClientRect()
+    const edge = bar.getBoundingClientRect()
+    box.x1 = Math.min(box.x1, edge.left - room.left - 18)
+  }
+
+  return box
+}
+
+function stopMusicalChairs() {
+  $game.set(null)
+}
+
+function startMusicalChairs(roster, jobs, activeProfile, turnBusy, roomEl) {
+  if ($game.get()) {
+    stopMusicalChairs()
+    return false
+  }
+
+  const players = idleBotNames(roster, jobs, activeProfile, turnBusy)
+  if (players.length < 2 || !roomEl) {
+    return false
+  }
+
+  const seats = { ...$seats.get() }
+
+  for (const name of players) {
+    if (!seats[name] && !$walks.get()[name]) {
+      const pos = deskPersonPos(name, roomEl)
+      if (pos) {
+        seats[name] = pos
+      }
+    }
+
+  }
+
+  saveSeats(seats)
+  const box = gameBox(roomEl)
+  const chairs = placeChairs(chairCountForGame(players.length), box)
+  const ring = gameRing(box, chairs.length)
+
+  for (const name of players) {
+    const from = currentPos(name, roomEl) || seats[name]
+    if (from) {
+      const to = ringPoint(ring, from, 0)
+      $roam.set({ ...$roam.get(), [name]: { from, to, t0: Date.now(), ms: Math.max(420, roamMs(from, to) * 0.6), rest: 60 } })
+    }
+  }
+
+  $game.set({ phase: 'scramble', t0: Date.now(), players, chairs, ring })
+  tap()
+  return true
+}
+
+function startSit(game, roomEl) {
+  const now = Date.now()
+  const people = (game.players || []).map(name => ({
     name,
-    from,
-    to,
-    t0: Date.now(),
-    ms: Math.max(760, roamMs(from, to) * 0.72)
+    x: (currentPos(name, roomEl, now) || {}).x || 0,
+    y: (currentPos(name, roomEl, now) || {}).y || 0
+  }))
+  const chairs = game.chairs || placeChairs(chairCountForGame(people.length), gameBox(roomEl))
+  const { assigned, leftover } = assignChairs(people, chairs)
+
+  for (const [name, chair] of Object.entries(assigned)) {
+    startWalk(name, { ...chair, x: chair.x + CHAIR_PX / 2 - FACE_HALF, y: chair.y + CHAIR_PX / 2 - FACE_HALF - 10 }, roomEl, 'chair')
+  }
+
+  if (leftover) {
+    const mid = roamPoint(roomEl)
+    startWalk(leftover, mid, roomEl, 'chair')
+    patchFx(leftover, { stretchUntil: now + 2200 })
+  }
+
+  $game.set({
+    phase: 'sit',
+    t0: now,
+    players: game.players,
+    chairs,
+    leftover,
+    assigned
   })
+}
+
+function tickGame(now, roomEl, jobs) {
+  const game = $game.get()
+  if (!game || !roomEl) {
+    return
+  }
+
+  if (game.phase === 'scramble') {
+    tickRoam(now, roomEl, { scramble: true, only: game.players, jobs, ring: game.ring })
+
+    if (now - game.t0 > 4200) {
+      startSit(game, roomEl)
+    }
+
+    return
+  }
+
+  if (game.phase === 'sit') {
+    const walking = (game.players || []).some(name => $walks.get()[name])
+    if (!walking || now - game.t0 > 3600) {
+      const clapUntil = now + 1100
+      for (const name of game.players || []) {
+        if (name !== game.leftover) {
+          patchFx(name, { clapUntil })
+        }
+      }
+
+      $game.set({ ...game, phase: 'out', t0: now })
+    }
+
+    return
+  }
+
+  if (game.phase === 'out' && now - game.t0 > 2200) {
+    $game.set(null)
+  }
 }
 
 function WorkerFace({ color, image, mood, size = 36, name }) {
@@ -820,7 +1648,7 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
   }, name)
 }
 
-function statusText({ face, isActive, wander }) {
+function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza }) {
   if (face === 'sleep') {
     return 'zzz'
   }
@@ -833,8 +1661,32 @@ function statusText({ face, isActive, wander }) {
     return 'hee'
   }
 
+  if (pizza) {
+    return 'pizza!'
+  }
+
+  if (noPizza) {
+    return 'no pizza'
+  }
+
+  if (cheers) {
+    return 'cheers'
+  }
+
   if (face === 'clap') {
     return 'yay'
+  }
+
+  if (leftover) {
+    return 'doh'
+  }
+
+  if (gamePhase === 'scramble') {
+    return 'go'
+  }
+
+  if (gamePhase === 'sit') {
+    return 'sit'
   }
 
   if (face === 'stretch') {
@@ -860,9 +1712,26 @@ function statusText({ face, isActive, wander }) {
   return isActive ? 'here' : 'at desk'
 }
 
-function Person({ bot, look, face, wander, closer, whisper, style, onPetStart }) {
+function PizzaSlice({ className }) {
+  return jsxs('svg', {
+    viewBox: '0 0 20 20',
+    width: 18,
+    height: 18,
+    className,
+    'aria-hidden': true,
+    children: [
+      jsx('path', { d: 'M2 3 L18 3 L10 19 Z', fill: '#f2b53a' }),
+      jsx('path', { d: 'M2 3 L18 3 L16.6 6 L3.4 6 Z', fill: '#c9702c' }),
+      jsx('circle', { cx: 8, cy: 9, r: 1.6, fill: '#c9302c' }),
+      jsx('circle', { cx: 12.5, cy: 10.5, r: 1.5, fill: '#c9302c' }),
+      jsx('circle', { cx: 10, cy: 14, r: 1.3, fill: '#c9302c' })
+    ]
+  })
+}
+
+function Person({ bot, look, face, wander, closer, whisper, cheers, gamePhase, leftover, pizza, noPizza, style, onPetStart }) {
   return jsxs('div', {
-    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer'),
+    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza'),
     style,
     role: 'button',
     tabIndex: 0,
@@ -879,16 +1748,17 @@ function Person({ bot, look, face, wander, closer, whisper, style, onPetStart })
       onPetStart.onActivate?.()
     },
     children: [
-      face === 'pet' || face === 'clap'
+      face === 'pet' || face === 'clap' || cheers
         ? jsxs('div', { className: 'office-hearts', 'aria-hidden': true, children: [jsx('span', { children: '♥' }), jsx('span', { children: '♥' }), jsx('span', { children: '♥' })] })
         : null,
       whisper
         ? jsx('div', { className: 'office-whisper', children: '…' })
         : null,
+      pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
       jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name }),
       jsx('span', {
-        className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle'),
-        children: statusText({ face, isActive: onPetStart.isActive, wander })
+        className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle', noPizza && 'is-sad'),
+        children: statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza })
       })
     ]
   })
@@ -999,9 +1869,9 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   const handle = botHandle(bot.name)
   const seats = useValue($seats)
   const drag = useValue($drag)
-  const walk = useValue($walk)
+  const walks = useValue($walks)
   const fx = readFx(bot.name, now)
-  const seat = drag?.name === bot.name || walk?.name === bot.name ? true : seats[bot.name]
+  const seat = drag?.name === bot.name || walks[bot.name] ? true : seats[bot.name]
   const held = drag?.name === bot.name
   const { shy, pet, handlers } = usePersonHandlers(bot, roomRef, held)
   const face = faceMood({
@@ -1043,17 +1913,23 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
               })
             : null,
           jsx(Monitor, { on: think, text: output }),
-          seat
-            ? jsx('div', { className: cn('office-empty-chair', 'is-wobble'), 'aria-hidden': true })
-            : jsx(Person, {
-                bot,
-                look,
-                face,
-                wander: false,
-                closer: fx.closer,
-                whisper: fx.whisper,
-                onPetStart: { ...handlers, isActive }
-              })
+          jsxs('div', {
+            className: 'office-seat',
+            children: [
+              jsx(DeskChair, { wobble: Boolean(seat) }),
+              seat
+                ? null
+                : jsx(Person, {
+                    bot,
+                    look,
+                    face,
+                    wander: false,
+                    closer: fx.closer,
+                    whisper: fx.whisper,
+                    onPetStart: { ...handlers, isActive }
+                  })
+            ]
+          })
         ]
       }),
       jsxs('button', {
@@ -1121,7 +1997,7 @@ function Monitor({ on, text }) {
   })
 }
 
-function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seats, walk, roam }) {
+function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seats, walk, roam, game }) {
   const look = botLook(bot)
   const think = deskMood({ isActive, turnBusy, tasked }) === 'think'
   const held = drag?.name === bot.name
@@ -1129,10 +2005,10 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
   const { shy, pet, handlers } = usePersonHandlers(bot, roomRef, held)
   let seat = held ? { x: drag.x, y: drag.y } : seats[bot.name]
 
-  if (walk?.name === bot.name) {
+  if (walk) {
     const raw = Math.min(1, (now - walk.t0) / Math.max(1, walk.ms))
     const t = easeInOut(raw)
-    const hop = Math.abs(Math.sin(raw * Math.PI * 2)) * 7
+    const hop = walkHop(raw, walk.kind)
     seat = {
       x: walk.from.x + (walk.to.x - walk.from.x) * t,
       y: walk.from.y + (walk.to.y - walk.from.y) * t - hop
@@ -1141,7 +2017,7 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     const span = Math.max(1, roam.ms)
     const raw = Math.min(1, (now - roam.t0) / span)
     const t = easeInOut(raw)
-    const hop = raw < 1 ? Math.abs(Math.sin(raw * Math.PI * 3)) * 6 : 0
+    const hop = walkHop(raw, game?.phase === 'scramble' ? 'scramble' : 'roam')
     seat = {
       x: roam.from.x + (roam.to.x - roam.from.x) * t,
       y: roam.from.y + (roam.to.y - roam.from.y) * t - hop
@@ -1168,6 +2044,11 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     wander: true,
     closer: fx.closer,
     whisper: fx.whisper,
+    cheers: fx.cheers,
+    pizza: fx.pizza,
+    noPizza: fx.noPizza,
+    gamePhase: game?.players?.includes(bot.name) ? game.phase : null,
+    leftover: game?.leftover === bot.name,
     style: { left: seat.x, top: seat.y },
     onPetStart: { ...handlers, isActive }
   })
@@ -1177,9 +2058,16 @@ function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
   const now = usePulse(16)
   const seats = useValue($seats)
   const drag = useValue($drag)
-  const walk = useValue($walk)
+  const walks = useValue($walks)
   const roam = useValue($roam)
-  const names = new Set([...Object.keys(seats), drag?.name, walk?.name].filter(Boolean))
+  const game = useValue($game)
+  const names = new Set([...Object.keys(seats), drag?.name, ...Object.keys(walks)].filter(Boolean))
+
+  useEffect(() => {
+    flushGoFlags(roomRef.current)
+    tickWalks(now)
+    tickGame(now, roomRef.current, jobs)
+  }, [now, jobs, roomRef])
 
   return jsx('div', {
     className: 'office-wander-layer',
@@ -1197,12 +2085,264 @@ function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
             now,
             drag,
             seats,
-            walk,
-            roam: roam[bot.name]
+            walk: walks[bot.name],
+            roam: roam[bot.name],
+            game
           },
           bot.name
         )
       )
+  })
+}
+
+// A wooden slat chair for musical chairs.
+function GameChair({ claimed, id, style }) {
+  return jsxs('svg', {
+    viewBox: '0 0 30 36',
+    width: 30,
+    height: 36,
+    className: cn('office-game-chair', claimed && 'is-claimed'),
+    'data-game-chair': id,
+    style,
+    'aria-hidden': true,
+    children: [
+      jsx('rect', { x: 6, y: 1, width: 18, height: 14, rx: 3, fill: '#a26b3f' }),
+      jsx('rect', { x: 8, y: 5, width: 14, height: 2, rx: 1, fill: 'rgba(0,0,0,.18)' }),
+      jsx('rect', { x: 8, y: 9, width: 14, height: 2, rx: 1, fill: 'rgba(0,0,0,.18)' }),
+      jsx('rect', { x: 3, y: 15, width: 24, height: 7, rx: 2, fill: '#b87b4a' }),
+      jsx('rect', { x: 3, y: 15, width: 24, height: 2, rx: 1, fill: 'rgba(255,255,255,.28)' }),
+      jsx('rect', { x: 5, y: 22, width: 3, height: 13, rx: 1, fill: '#6b4425' }),
+      jsx('rect', { x: 22, y: 22, width: 3, height: 13, rx: 1, fill: '#6b4425' }),
+      jsx('rect', { x: 8, y: 27, width: 14, height: 2, rx: 1, fill: '#6b4425' })
+    ]
+  })
+}
+
+// The office chair at every desk. Bots sit on it; it wobbles when they leave.
+function DeskChair({ wobble }) {
+  return jsxs('svg', {
+    viewBox: '0 0 42 46',
+    width: 42,
+    height: 46,
+    className: cn('office-desk-chair', wobble && 'is-wobble'),
+    'aria-hidden': true,
+    children: [
+      jsx('rect', { x: 8, y: 1, width: 26, height: 22, rx: 7, fill: '#3b3b43' }),
+      jsx('rect', { x: 11, y: 4, width: 20, height: 16, rx: 5, fill: '#4c4c56' }),
+      jsx('rect', { x: 4, y: 22, width: 34, height: 10, rx: 4, fill: '#454550' }),
+      jsx('rect', { x: 4, y: 22, width: 34, height: 3, rx: 1.5, fill: 'rgba(255,255,255,.14)' }),
+      jsx('rect', { x: 19.5, y: 32, width: 3, height: 7, rx: 1, fill: '#8a8a94' }),
+      jsx('path', { d: 'M21 39 L7 44 M21 39 L35 44 M21 39 L21 45', stroke: '#8a8a94', strokeWidth: 2.4, strokeLinecap: 'round' }),
+      jsx('circle', { cx: 7, cy: 44.5, r: 1.6, fill: '#26262c' }),
+      jsx('circle', { cx: 35, cy: 44.5, r: 1.6, fill: '#26262c' }),
+      jsx('circle', { cx: 21, cy: 45, r: 1.6, fill: '#26262c' })
+    ]
+  })
+}
+
+function GameChairs() {
+  const game = useValue($game)
+  if (!game?.chairs?.length) {
+    return null
+  }
+
+  return jsx('div', {
+    className: 'office-game-layer',
+    'aria-hidden': true,
+    children: game.chairs.map(chair =>
+      jsx(GameChair, { id: chair.id, claimed: game.phase === 'out', style: { left: chair.x, top: chair.y } }, chair.id)
+    )
+  })
+}
+
+// Chalk hopscotch on the floor: 1, 2, 3|4, 5, 6|7, 8. Bots hop the numbers in
+// order, so the pairs are just squares that happen to sit side by side.
+const HOP_ROWS = [[1], [2], [3, 4], [5], [6, 7], [8]]
+
+function Hopscotch({ onHop }) {
+  return jsxs('div', {
+    className: 'office-aisle',
+    children: [
+      jsx('div', { className: 'office-hop-label', children: 'hop' }),
+      ...HOP_ROWS.map(row =>
+        jsx(
+          'div',
+          {
+            className: 'office-hop-row',
+            children: row.map(n =>
+              jsx(
+                'button',
+                {
+                  type: 'button',
+                  className: 'office-hop',
+                  'data-hop': String(n),
+                  'aria-label': `Hopscotch square ${n}`,
+                  onPointerDown: event => {
+                    event.stopPropagation()
+                    onHop?.()
+                  },
+                  children: n
+                },
+                n
+              )
+            )
+          },
+          row.join('-')
+        )
+      )
+    ]
+  })
+}
+
+// The pie on the pizza counter. Loses a slice once someone has claimed it.
+function PizzaPie({ eaten }) {
+  return jsxs('svg', {
+    viewBox: '0 0 40 40',
+    width: 34,
+    height: 34,
+    className: cn('office-pie', eaten && 'is-eaten'),
+    'aria-hidden': true,
+    children: [
+      jsx('circle', { cx: 20, cy: 20, r: 19.5, fill: '#4a4a4e' }),
+      jsx('circle', { cx: 20, cy: 20, r: 18, fill: '#c9702c' }),
+      jsx('circle', { cx: 20, cy: 20, r: 15, fill: '#f2b53a' }),
+      jsxs('g', {
+        fill: '#c9302c',
+        children: [
+          jsx('circle', { cx: 13, cy: 14, r: 2.4 }),
+          jsx('circle', { cx: 25, cy: 12, r: 2.4 }),
+          jsx('circle', { cx: 28, cy: 23, r: 2.4 }),
+          jsx('circle', { cx: 18, cy: 26, r: 2.4 }),
+          jsx('circle', { cx: 10, cy: 24, r: 2.2 }),
+          jsx('circle', { cx: 21, cy: 19, r: 2 })
+        ]
+      }),
+      jsxs('g', {
+        fill: '#4f8f38',
+        children: [
+          jsx('ellipse', { cx: 16, cy: 20, rx: 2, ry: 1.2, transform: 'rotate(-30 16 20)' }),
+          jsx('ellipse', { cx: 25, cy: 28, rx: 2, ry: 1.2, transform: 'rotate(20 25 28)' })
+        ]
+      }),
+      jsx('path', { d: 'M20 20 L20 3 A17 17 0 0 1 35.6 11 Z', stroke: 'rgba(0,0,0,.18)', strokeWidth: 1, fill: 'none' }),
+      eaten
+        ? jsx('path', { d: 'M20 20 L20 1.5 A18.5 18.5 0 0 1 36.7 11.2 Z', fill: '#4a4a4e' })
+        : null
+    ]
+  })
+}
+
+// Back bar: a row of bottles on the shelf.
+function BarBottles() {
+  const bottles = [
+    { x: 4, h: 22, w: 7, fill: '#3d7a3a' },
+    { x: 15, h: 26, w: 7, fill: '#c98a2a' },
+    { x: 26, h: 18, w: 8, fill: '#e6dcc4' },
+    { x: 38, h: 24, w: 7, fill: '#8a2a3a' },
+    { x: 49, h: 20, w: 7, fill: '#4a86c9' },
+    { x: 60, h: 25, w: 7, fill: '#2b2b2f' },
+    { x: 71, h: 19, w: 8, fill: '#c9702c' },
+    { x: 83, h: 23, w: 7, fill: '#3d7a3a' },
+    { x: 94, h: 21, w: 7, fill: '#e6dcc4' }
+  ]
+
+  return jsx('svg', {
+    viewBox: '0 0 108 30',
+    className: 'office-bar-bottles',
+    preserveAspectRatio: 'xMidYMax meet',
+    'aria-hidden': true,
+    children: bottles.map((b, i) =>
+      jsxs('g', {
+        children: [
+          jsx('rect', { x: b.x + b.w / 2 - 1.5, y: 30 - b.h, width: 3, height: 6, rx: 1, fill: b.fill }),
+          jsx('rect', { x: b.x, y: 30 - b.h + 5, width: b.w, height: b.h - 5, rx: 1.5, fill: b.fill }),
+          jsx('rect', { x: b.x + 1.2, y: 30 - b.h + 8, width: 1.4, height: b.h - 11, rx: .7, fill: 'rgba(255,255,255,.35)' }),
+          jsx('rect', { x: b.x + 1, y: 30 - b.h + 11, width: b.w - 2, height: 5, rx: .5, fill: 'rgba(255,255,255,.55)' })
+        ]
+      }, i)
+    )
+  })
+}
+
+// Beer taps and a poured pint on the counter.
+function BarTaps() {
+  return jsxs('svg', {
+    viewBox: '0 0 64 30',
+    width: 64,
+    height: 30,
+    className: 'office-bar-taps',
+    'aria-hidden': true,
+    children: [
+      jsx('rect', { x: 14, y: 12, width: 26, height: 18, rx: 3, fill: '#8f949c' }),
+      jsx('rect', { x: 16, y: 13, width: 6, height: 16, rx: 2, fill: 'rgba(255,255,255,.35)' }),
+      jsx('rect', { x: 20, y: 2, width: 3, height: 12, rx: 1.5, fill: '#2b2b2f' }),
+      jsx('circle', { cx: 21.5, cy: 3, r: 2.6, fill: '#c9302c' }),
+      jsx('rect', { x: 31, y: 2, width: 3, height: 12, rx: 1.5, fill: '#2b2b2f' }),
+      jsx('circle', { cx: 32.5, cy: 3, r: 2.6, fill: '#3d7a3a' }),
+      jsx('rect', { x: 46, y: 12, width: 12, height: 18, rx: 1.5, fill: '#f2b53a' }),
+      jsx('rect', { x: 46, y: 12, width: 12, height: 18, rx: 1.5, fill: 'none', stroke: 'rgba(255,255,255,.55)', strokeWidth: 1 }),
+      jsx('ellipse', { cx: 52, cy: 12, rx: 7, ry: 3.2, fill: '#fff' }),
+      jsx('circle', { cx: 56.5, cy: 10, r: 1.6, fill: '#fff' })
+    ]
+  })
+}
+
+function OfficeBar({ count }) {
+  const n = Math.min(6, Math.max(3, count || 3))
+  const backdrop = useValue($backdrop)
+  const pizza = useValue($pizza)
+  const parlor = backdrop === 'pizza'
+
+  return jsxs('aside', {
+    className: 'office-bar',
+    children: [
+      jsx('div', { className: 'office-bar-sign', children: parlor ? 'Pizza' : 'Bar' }),
+      jsx('div', { className: 'office-bar-shelf', 'aria-hidden': true, children: parlor ? null : jsx(BarBottles, {}) }),
+      jsx('div', {
+        className: 'office-bar-counter',
+        'aria-hidden': true,
+        children: parlor ? jsx(PizzaPie, { eaten: Boolean(pizza?.winner) }) : jsx(BarTaps, {})
+      }),
+      jsx('div', {
+        className: 'office-bar-stools',
+        children: Array.from({ length: n }, (_, i) =>
+          jsx('div', { className: 'office-bar-stool', 'data-stool': String(i), 'aria-hidden': true }, i)
+        )
+      })
+    ]
+  })
+}
+
+function FloorTools({ roster, jobs, activeProfile, turnBusy, roomRef, idleCount }) {
+  const backdrop = useValue($backdrop)
+  const game = useValue($game)
+
+  return jsxs('div', {
+    className: 'office-tools',
+    children: [
+      jsx('button', {
+        type: 'button',
+        className: 'office-tool',
+        title: 'Change the room',
+        onClick: () => {
+          const next = nextBackdrop($backdrop.get())
+          $backdrop.set(next)
+          savePref('backdrop', next)
+          tap()
+        },
+        children: backdrop
+      }),
+      jsx('button', {
+        type: 'button',
+        className: cn('office-tool', game && 'is-on'),
+        title: game ? 'Stop musical chairs' : 'Play musical chairs',
+        disabled: !game && idleCount < 2,
+        onClick: () => {
+          startMusicalChairs(roster, jobs, activeProfile, turnBusy, roomRef.current)
+        },
+        children: game ? 'stop' : 'chairs'
+      })
+    ]
   })
 }
 
@@ -1443,8 +2583,8 @@ function OfficeFloor() {
   const now = usePulse(200)
   const night = isNightHour(new Date(now))
   const peek = useValue($peekUntil) > now
-  const walk = useValue($walk)
   const jobs = useValue($jobs)
+  const backdrop = useValue($backdrop)
   const roomRef = useRef(null)
   const prevBusy = useRef(false)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
@@ -1452,6 +2592,7 @@ function OfficeFloor() {
   const working = roster.filter(
     bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs[bot.name]) }) === 'think'
   )
+  const idleCount = idleBotNames(roster, jobs, activeProfile, turnBusy).length
 
   useEffect(() => {
     pullAvatars(roster)
@@ -1459,34 +2600,21 @@ function OfficeFloor() {
 
   useEffect(() => {
     if (prevBusy.current && !turnBusy && activeProfile) {
-      patchFx(activeProfile, { clapUntil: Date.now() + 1100, nap: false })
+      patchFx(activeProfile, { clapUntil: Date.now() + 1100, nap: false, goBar: true, goHome: false })
     }
 
     if (turnBusy && activeProfile) {
-      patchFx(activeProfile, { nap: false })
+      startRound(activeProfile)
     }
 
     prevBusy.current = turnBusy
   }, [turnBusy, activeProfile])
 
   useEffect(() => {
-    if (!walk) {
-      return
-    }
+    tickRoam(now, roomRef.current, { jobs })
+  }, [now, jobs])
 
-    if (now - walk.t0 < walk.ms) {
-      return
-    }
-
-    const next = { ...$seats.get() }
-    delete next[walk.name]
-    saveSeats(next)
-    $walk.set(null)
-  }, [now, walk])
-
-  useEffect(() => {
-    tickRoam(now, roomRef.current)
-  }, [now, walk])
+  useEffect(() => () => stopMusicalChairs(), [])
 
   const onFloor = event => {
     const mark = event.target?.classList
@@ -1494,13 +2622,24 @@ function OfficeFloor() {
       return
     }
 
-    if (mark.contains('office-room') || mark.contains('office-grid')) {
+    if (mark.contains('office-room') || mark.contains('office-grid') || mark.contains('office-work') || mark.contains('office-floor')) {
       $peekUntil.set(Date.now() + 900)
     }
   }
 
+  const playHop = () => {
+    const idle = idleBotNames(roster, jobs, activeProfile, turnBusy)
+    const name = idle.includes(selected) ? selected : idle[0]
+    if (!name) {
+      return
+    }
+
+    startHopscotch(name, roomRef.current)
+    tap()
+  }
+
   return jsxs('div', {
-    className: cn('office-root', night && 'is-night'),
+    className: cn('office-root', night && 'is-night', `is-${backdrop}`),
     children: [
       jsxs('header', {
         className: 'office-header',
@@ -1512,22 +2651,38 @@ function OfficeFloor() {
             ]
           }),
           jsxs('div', {
-            className: 'office-count',
+            className: 'office-head-right',
             children: [
-              jsx('span', { className: cn('office-pulse', working.length && 'is-live') }),
-              working.length ? `${working.length} thinking` : roster.length ? 'All quiet' : 'No desks yet'
+              roster.length
+                ? jsx(FloorTools, {
+                    roster,
+                    jobs,
+                    activeProfile,
+                    turnBusy,
+                    roomRef,
+                    idleCount
+                  })
+                : null,
+              jsxs('div', {
+                className: 'office-count',
+                children: [
+                  jsx('span', { className: cn('office-pulse', working.length && 'is-live') }),
+                  working.length ? `${working.length} thinking` : roster.length ? 'All quiet' : 'No desks yet'
+                ]
+              })
             ]
           })
         ]
       }),
       jsxs('div', {
-        className: 'office-room',
+        className: cn('office-room', `is-${backdrop}`),
         ref: roomRef,
         onPointerDown: onFloor,
         children: [
-          jsx('div', { className: cn('office-wall') }),
+          jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
           jsx(OfficeProps, { now, roomRef }),
+          jsx(GameChairs, {}),
           isLoading
             ? jsx('div', { className: 'office-empty', children: 'Opening the office…' })
             : error
@@ -1542,27 +2697,37 @@ function OfficeFloor() {
                   })
                 : jsxs(Fragment, {
                     children: [
-                      jsx('div', {
-                        className: 'office-grid',
-                        children: roster.map(bot =>
-                          jsx(
-                            Desk,
-                            {
-                              bot,
-                              isActive: bot.name === activeProfile,
-                              turnBusy,
-                              tasked: Boolean(jobs[bot.name]),
-                              picked: bot.name === selected,
-                              roomRef,
-                              night,
-                              peek,
-                              now,
-                              onPick: () => pickBot(bot.name),
-                              onOpen: () => void openBot(bot)
-                            },
-                            bot.name
-                          )
-                        )
+                      jsxs('div', {
+                        className: 'office-floor',
+                        children: [
+                          jsx('div', {
+                            className: 'office-work',
+                            children: jsx('div', {
+                              className: 'office-grid',
+                              children: roster.map(bot =>
+                                jsx(
+                                  Desk,
+                                  {
+                                    bot,
+                                    isActive: bot.name === activeProfile,
+                                    turnBusy,
+                                    tasked: Boolean(jobs[bot.name]),
+                                    picked: bot.name === selected,
+                                    roomRef,
+                                    night,
+                                    peek,
+                                    now,
+                                    onPick: () => pickBot(bot.name),
+                                    onOpen: () => void openBot(bot)
+                                  },
+                                  bot.name
+                                )
+                              )
+                            })
+                          }),
+                          jsx(Hopscotch, { onHop: playHop }),
+                          jsx(OfficeBar, { count: roster.length })
+                        ]
                       }),
                       jsx(Wanderers, {
                         roster,
@@ -1614,6 +2779,12 @@ function injectOfficeCss() {
 .office-header { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; padding:16px 18px 10px; }
 .office-kicker { font-size:10px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ui-text-quaternary); }
 .office-title { margin:2px 0 0; font-size:20px; font-weight:600; color:var(--ui-text-primary, inherit); }
+.office-head-right { display:flex; align-items:center; gap:14px; }
+.office-tools { display:flex; align-items:center; gap:6px; }
+.office-tool { height:24px; padding:0 8px; border:1px solid var(--ui-stroke-secondary); border-radius:999px; background:transparent; color:var(--ui-text-tertiary); font:inherit; font-size:11px; cursor:pointer; }
+.office-tool:hover { color:var(--ui-text-primary, inherit); }
+.office-tool.is-on { border-color:var(--ui-accent); color:var(--ui-accent); }
+.office-tool:disabled { opacity:.4; cursor:default; }
 .office-count { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ui-text-tertiary); }
 .office-pulse { width:8px; height:8px; border-radius:99px; background:var(--ui-text-quaternary); }
 .office-pulse.is-live { background:var(--ui-accent); box-shadow:0 0 0 4px color-mix(in srgb, var(--ui-accent) 22%, transparent); }
@@ -1630,41 +2801,77 @@ function injectOfficeCss() {
 .office-task-input:disabled { opacity:.7; }
 .office-task-send { height:32px; padding:0 12px; border:0; border-radius:8px; background:var(--ui-accent); color:var(--ui-accent-fg, #fff); font-size:12px; cursor:pointer; }
 .office-task-send:disabled { opacity:.45; cursor:default; }
-.office-desk.is-picked .office-plate { outline:1px dashed var(--ui-accent); }
-.office-room { position:relative; flex:1; min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:
-  linear-gradient(180deg, color-mix(in srgb, var(--ui-bg) 70%, #8aa) 0 86px, transparent 86px),
-  repeating-linear-gradient(90deg, color-mix(in srgb, var(--ui-stroke-secondary) 55%, transparent) 0 1px, transparent 1px 28px),
-  repeating-linear-gradient(0deg, color-mix(in srgb, var(--ui-stroke-secondary) 35%, transparent) 0 1px, transparent 1px 28px),
-  color-mix(in srgb, var(--ui-bg) 88%, #6b5); }
-.office-root.is-night .office-room { background:
-  linear-gradient(180deg, color-mix(in srgb, var(--ui-bg) 55%, #124) 0 86px, transparent 86px),
-  repeating-linear-gradient(90deg, color-mix(in srgb, var(--ui-stroke-secondary) 40%, transparent) 0 1px, transparent 1px 28px),
-  repeating-linear-gradient(0deg, color-mix(in srgb, var(--ui-stroke-secondary) 25%, transparent) 0 1px, transparent 1px 28px),
-  color-mix(in srgb, var(--ui-bg) 82%, #243); }
-.office-wall { position:absolute; inset:0 0 auto 0; height:86px; pointer-events:none; background:linear-gradient(180deg, color-mix(in srgb, var(--ui-bg) 40%, #9ab) , transparent); }
-.office-plant { position:absolute; top:40px; left:18px; width:18px; height:28px; border-radius:40% 40% 20% 20%; background:color-mix(in srgb, #3d8 70%, var(--ui-bg)); pointer-events:none; transform-origin:50% 100%; transition:transform .6s ease; }
+.office-desk.is-picked .office-plate { outline:1px dashed var(--ui-accent); outline-offset:1px; }
+.office-room { position:relative; flex:1; min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:#557b8c; }
+.office-wall { position:absolute; inset:0 0 auto 0; height:${WALL_H}px; pointer-events:none; }
+.office-wall:after { content:""; position:absolute; left:0; right:0; top:100%; height:12px; background:linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,0)); }
+${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('\n')}
+.office-plant { position:absolute; top:56px; left:18px; width:18px; height:28px; border-radius:40% 40% 20% 20%; background:#3f9f5f; box-shadow: inset -3px -2px 0 rgba(0,0,0,.18); pointer-events:none; transform-origin:50% 100%; transition:transform .6s ease; z-index:1; }
 .office-plant.is-lean { transform: rotate(16deg); }
-.office-plant:after { content:""; position:absolute; left:6px; bottom:-8px; width:6px; height:12px; background:color-mix(in srgb, #864 70%, var(--ui-bg)); }
+.office-plant:after { content:""; position:absolute; left:5px; bottom:-9px; width:8px; height:12px; border-radius:1px 1px 3px 3px; background:#8b5a3a; box-shadow: inset 0 1px 0 #b0805a; }
+.office-room.is-nightclub .office-plant { background:#2f7f6f; }
 .office-clock { position:absolute; top:12px; left:50px; display:grid; justify-items:center; gap:3px; border:0; padding:0; background:transparent; color:inherit; cursor:grab; touch-action:none; z-index:5; }
 .office-clock.is-digital { top:16px; }
 .office-clock.is-free { top:auto; }
 .office-clock:active { cursor:grabbing; }
 .office-clock-lcd { min-width:52px; padding:4px 7px 3px; border-radius:4px; background:#142016; color:#9dffb0; font-size:12px; font-variant-numeric:tabular-nums; letter-spacing:.06em; box-shadow: inset 0 0 0 1px #2a3a2c, 0 1px 0 color-mix(in srgb, #000 25%, transparent); }
 .office-clock-face { position:relative; width:36px; height:36px; border-radius:99px; background:
-  repeating-conic-gradient(from -1deg, var(--ui-text-secondary) 0 2deg, transparent 2deg 30deg),
-  color-mix(in srgb, var(--ui-bg) 80%, #fff);
-  box-shadow: inset 0 0 0 2px var(--ui-stroke-secondary), 0 1px 0 color-mix(in srgb, #000 20%, transparent); }
-.office-clock-hour, .office-clock-min { position:absolute; left:50%; bottom:50%; width:2px; background:var(--ui-text-primary, #222); transform-origin:50% 100%; border-radius:2px; }
+  repeating-conic-gradient(from -1deg, color-mix(in srgb, CanvasText 70%, transparent) 0 2deg, transparent 2deg 30deg),
+  Canvas;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, CanvasText 30%, transparent), 0 1px 3px rgba(0,0,0,.3); }
+.office-clock-hour, .office-clock-min { position:absolute; left:50%; bottom:50%; width:2px; background:CanvasText; transform-origin:50% 100%; border-radius:2px; }
 .office-clock-hour { height:10px; margin-left:-1px; }
 .office-clock-min { height:13px; width:1.5px; margin-left:-0.75px; opacity:.85; }
-.office-clock-pin { position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px; border-radius:99px; background:var(--ui-text-primary, #222); }
-.office-clock-digits { font-size:10px; font-variant-numeric:tabular-nums; color:var(--ui-text-tertiary); }
+.office-clock-pin { position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px; border-radius:99px; background:CanvasText; }
+.office-clock-digits { font-size:10px; font-variant-numeric:tabular-nums; color:CanvasText; background:Canvas; padding:0 5px; border-radius:99px; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent); }
 
-.office-grid { position:relative; display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:22px; padding:108px 22px 28px; min-height:calc(100% - 86px); }
+.office-floor { position:relative; z-index:1; display:flex; align-items:stretch; box-sizing:border-box; min-width:560px; min-height:100%; padding:${WALL_H + 10}px 0 16px; }
+.office-work { flex:1 1 56%; min-width:0; }
+.office-grid { position:relative; display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:18px; padding:8px 14px 20px; min-height:0; }
+.office-aisle { flex:0 0 84px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:4px; padding:10px 6px 16px; z-index:2; }
+.office-chip, .office-hop-label, .office-bar-sign, .office-status, .office-home { background:Canvas; color:CanvasText; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent), 0 1px 3px rgba(0,0,0,.22); }
+.office-hop-label { font-size:9px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; padding:1px 6px; border-radius:99px; margin-bottom:4px; }
+.office-hop-row { display:flex; gap:4px; }
+.office-hop { width:30px; height:28px; padding:0; border:2px solid #f6f2e6; border-radius:5px; background:color-mix(in srgb, Canvas 90%, transparent); color:CanvasText; font:inherit; font-size:11px; font-weight:700; cursor:pointer; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 1px 3px rgba(0,0,0,.2); }
+.office-hop:hover { border-color:var(--ui-accent); color:var(--ui-accent); }
+.office-room.is-nightclub .office-hop { border-color:#f7a8dc; box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 0 8px rgba(255,79,176,.45); }
+.office-bar { flex:0 0 148px; display:flex; flex-direction:column; align-items:center; padding:6px 10px 18px; z-index:2; }
+.office-bar-sign { font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; padding:2px 9px; border-radius:99px; margin-bottom:8px; }
+.office-room.is-nightclub .office-bar-sign { color:#f6c; text-shadow:0 0 8px #f4a; }
+.office-bar-shelf { position:relative; width:100%; height:14px; margin-top:20px; border-radius:3px 3px 0 0; background:linear-gradient(180deg, #6a4a32, #3d2a1c); box-shadow: inset 0 1px 0 #a07a55, 0 -22px 0 -1px rgba(20,28,40,.35); }
+.office-bar-shelf:before, .office-bar-shelf:after { content:none; position:absolute; bottom:3px; width:5px; height:9px; border-radius:1px 1px 0 0; background:#7ec8e8; }
+.office-bar-shelf:before { left:18%; background:#e86; }
+.office-bar-shelf:after { left:32%; }
+.office-bar-bottles { position:absolute; left:6px; right:6px; bottom:5px; height:30px; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+.office-bar-counter { display:flex; justify-content:flex-end; padding-right:10px; box-sizing:border-box; width:100%; height:28px; border-radius:0 0 6px 6px; background:linear-gradient(180deg, #a3734a 0 3px, #8d623e 3px, #5a3d22); box-shadow:0 6px 0 #3d2816, 0 9px 0 #c9a24a, 0 14px 10px -2px rgba(0,0,0,.35); margin-bottom:16px; }
+.office-bar-taps { position:relative; margin-top:-18px; z-index:3; filter:drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
+.office-room.is-nightclub .office-bar-counter { background:linear-gradient(180deg, #3a2448 0 3px, #2a1838 3px, #140816); box-shadow:0 6px 0 #0a0610, 0 9px 0 #48e0ff, 0 14px 10px -2px rgba(0,0,0,.45), 0 0 12px color-mix(in srgb, #f4a 35%, transparent); }
+.office-room.is-nightclub .office-bar-shelf { background:linear-gradient(180deg, #2a1838, #140816); box-shadow: inset 0 1px 0 #f4a, 0 -22px 0 -1px rgba(255,79,176,.12); }
+.office-bar-stools { display:flex; flex-wrap:wrap; justify-content:center; gap:10px 12px; width:100%; padding:10px 6px 12px; border-radius:12px; background:rgba(0,0,0,.16); box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+.office-room.is-nightclub .office-bar-stools { background:rgba(255,79,176,.10); box-shadow: inset 0 0 0 1px rgba(255,79,176,.25); }
+.office-bar-stool { width:22px; height:18px; border-radius:6px 6px 3px 3px; background:linear-gradient(180deg, #a83a34 0 45%, #3a2a22 45%); box-shadow:0 3px 0 #241812, inset 0 1px 0 #d4665f, 0 6px 5px -1px rgba(0,0,0,.4); }
+.office-room.is-nightclub .office-bar-stool { background:#2a1830; box-shadow:0 3px 0 #120814, inset 0 1px 0 #f4a, 0 6px 5px -1px rgba(0,0,0,.5); }
+.office-room.is-pizza .office-bar-sign { color:#fff; background:#c9302c; letter-spacing:.2em; box-shadow:0 1px 0 rgba(0,0,0,.25); }
+.office-room.is-pizza .office-bar-shelf { background:linear-gradient(180deg, #e9dcc6, #cdbb9d); box-shadow: inset 0 1px 0 #fff8ea; }
+.office-room.is-pizza .office-bar-shelf { box-shadow: inset 0 1px 0 #fff8ea; }
+.office-room.is-pizza .office-bar-shelf:before { content:""; background:#c9302c; width:12px; height:8px; left:14%; }
+.office-room.is-pizza .office-bar-shelf:after { content:""; background:#c9302c; width:12px; height:8px; left:30%; }
+.office-room.is-pizza .office-bar-counter { justify-content:center; padding-right:0; background:linear-gradient(180deg, #ececec 0 50%, #c9302c 50% 62.5%, #ececec 62.5% 75%, #c9302c 75% 87.5%, #ececec 87.5%); box-shadow:0 6px 0 #a3a3a3, 0 12px 10px -2px rgba(0,0,0,.35); }
+.office-room.is-pizza .office-bar-stools { background:rgba(120,40,30,.14); }
+.office-room.is-pizza .office-bar-stool { background:#c9302c; box-shadow:0 3px 0 #8f1f1c, inset 0 1px 0 #ea6c66, 0 6px 5px -1px rgba(0,0,0,.4); }
+.office-pie { position:relative; margin-top:-16px; z-index:3; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
+.office-slice { position:absolute; top:-2px; left:-12px; z-index:2; transform:rotate(-20deg); filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); animation:office-slice .6s ease-in-out infinite; }
+.office-status.is-sad { color:#c9302c; }
+@keyframes office-slice { 0%,100% { transform:rotate(-20deg) translateY(0); } 50% { transform:rotate(-8deg) translateY(-2px); } }
+.office-game-layer { position:absolute; inset:0; pointer-events:none; z-index:4; }
+.office-game-chair { position:absolute; display:block; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
+.office-game-chair.is-claimed { filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)) drop-shadow(0 0 4px var(--ui-accent)); }
 .office-empty { padding:120px 20px 40px; text-align:center; color:var(--ui-text-tertiary); font-size:13px; }
-.office-desk { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 10px 10px; border:0; background:transparent; color:inherit; text-align:center; user-select:none; -webkit-user-drag:none; }
+.office-desk { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 10px 10px; border:0; border-radius:16px; background:rgba(0,0,0,.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,.10); color:inherit; text-align:center; user-select:none; -webkit-user-drag:none; }
+.office-room.is-nightclub .office-desk { background:rgba(255,255,255,.07); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .office-stage { position:relative; width:100%; min-height:118px; display:flex; flex-direction:column; align-items:center; }
-.office-desk-top { position:absolute; left:8px; right:8px; top:48px; height:34px; border-radius:6px; background:#8d623e; box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, #000 20%, transparent); outline:1px solid color-mix(in srgb, #000 22%, transparent); z-index:1; pointer-events:none; }
+.office-stage:before { content:""; position:absolute; left:14px; right:14px; top:84px; height:34px; border-radius:50%; background:radial-gradient(ellipse at 50% 50%, rgba(0,0,0,.30), rgba(0,0,0,0) 68%); pointer-events:none; }
+.office-desk-top { position:absolute; left:8px; right:8px; top:48px; height:34px; border-radius:6px; background:#8d623e; box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, #000 20%, transparent), 0 14px 10px -2px rgba(0,0,0,.35); outline:1px solid color-mix(in srgb, #000 22%, transparent); z-index:1; pointer-events:none; }
 .office-lamp { position:absolute; top:24px; right:10px; width:18px; height:30px; display:flex; flex-direction:column; align-items:center; z-index:2; pointer-events:none; }
 .office-lamp-shade { width:16px; height:9px; background:linear-gradient(180deg, #b56a24, #e29a3a); clip-path:polygon(18% 0, 82% 0, 100% 100%, 0 100%); border-radius:1px; box-shadow:0 5px 10px 2px color-mix(in srgb, #ffb14a 50%, transparent); position:relative; }
 .office-lamp-shade:after { content:""; position:absolute; left:2px; right:2px; bottom:-1px; height:3px; background:#ffe7b0; opacity:.8; filter:blur(1px); }
@@ -1679,12 +2886,17 @@ function injectOfficeCss() {
 .office-monitor-cam { position:absolute; left:50%; bottom:2.5px; width:3px; height:3px; margin-left:-1.5px; border-radius:99px; background:#141416; box-shadow:0 0 0 1px #4a4c52; }
 .office-monitor-neck { width:7px; height:7px; background:linear-gradient(180deg, #3e4046, #2a2c30); }
 .office-monitor-base { width:24px; height:4px; border-radius:3px 3px 1px 1px; background:linear-gradient(180deg, #45474d, #2a2c30); box-shadow:0 1px 1px color-mix(in srgb, #000 30%, transparent); }
-.office-empty-chair { width:42px; height:42px; margin-top:-8px; border-radius:12px; background:color-mix(in srgb, var(--ui-stroke-secondary) 70%, #bbb); box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 18%, transparent); position:relative; z-index:3; }
-.office-stage .office-person { margin-top:-10px; z-index:3; }
-.office-empty-chair.is-wobble { animation:office-wobble .5s ease-in-out 2; }
+.office-seat { position:relative; width:42px; height:46px; margin-top:-8px; z-index:3; }
+.office-desk-chair { position:absolute; left:0; top:0; display:block; transform-origin:50% 90%; filter:drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
+.office-desk-chair.is-wobble { animation:office-wobble .5s ease-in-out 2; }
+.office-stage .office-person { position:absolute; left:0; top:-2px; margin:0; z-index:3; width:42px; }
+.office-stage .office-person .office-status { position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:2px; }
+.office-stage .office-person .office-hearts { left:50%; transform:translateX(-50%); }
 .office-person { position:relative; z-index:3; margin-top:4px; display:grid; justify-items:center; gap:4px; cursor:grab; touch-action:none; outline:none; }
 .office-person.is-held { cursor:grabbing; z-index:30; }
-.office-person.is-wander { position:absolute; margin:0; z-index:8; will-change:left, top; }
+.office-person.is-wander { position:absolute; margin:0; z-index:8; width:42px; will-change:left, top; }
+.office-person.is-wander .office-status { position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:2px; }
+.office-person.is-wander .office-hearts { left:50%; transform:translateX(-50%); }
 .office-person.is-closer { transform: scale(1.12) translateY(4px); }
 .office-face { display:block; transform-origin:50% 80%; pointer-events:none; -webkit-user-drag:none; filter: drop-shadow(0 0 0.6px #fff) drop-shadow(0 0 0.8px #1a1a1a) drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
 .office-face-think { animation:office-think 0.9s ease-in-out infinite; }
@@ -1695,24 +2907,26 @@ function injectOfficeCss() {
 .office-face-clap { animation:office-pet 0.28s ease-in-out infinite; }
 .office-face-stretch { transform: scaleX(1.18) scaleY(0.9); }
 .office-face-peek { transform: translateY(-6px); }
-.office-status { font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--ui-accent); }
-.office-status.is-idle { color:var(--ui-text-quaternary); }
+.office-status { font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--ui-accent); padding:1px 7px; border-radius:99px; white-space:nowrap; }
+.office-status.is-idle { color:color-mix(in srgb, CanvasText 62%, transparent); }
 .office-person.is-shy .office-status, .office-person.is-held .office-status { color:#f09; }
-.office-whisper { position:absolute; top:-14px; right:-6px; font-size:12px; color:var(--ui-text-secondary); background:color-mix(in srgb, var(--ui-bg) 80%, #fff); border-radius:8px; padding:0 5px; }
-.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:8px; background:transparent; color:inherit; text-align:center; cursor:pointer; }
-.office-name { font-size:13px; font-weight:600; color:var(--ui-text-primary, inherit); }
-.office-handle { font-size:11px; color:var(--ui-text-quaternary); }
+.office-whisper { position:absolute; top:-14px; right:-6px; font-size:12px; color:CanvasText; background:Canvas; border-radius:8px; padding:0 5px; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent); }
+.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:9px; background:Canvas; color:CanvasText; text-align:center; cursor:pointer; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 16%, transparent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); }
+.office-plate:hover { box-shadow: 0 0 0 1px var(--ui-accent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); }
+.office-name { font-size:13px; font-weight:600; color:CanvasText; }
+.office-handle { font-size:11px; color:color-mix(in srgb, CanvasText 60%, transparent); }
 .office-say { position:relative; z-index:2; width:100%; margin-top:2px; padding:8px 10px 9px; border:0; border-radius:12px; background:Canvas; color:CanvasText; font:inherit; font-size:12px; line-height:1.35; text-align:left; cursor:pointer; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; outline:1px solid var(--ui-stroke-secondary); box-shadow:0 1px 0 color-mix(in srgb, #000 10%, transparent), 0 8px 18px color-mix(in srgb, #000 12%, transparent); }
 .office-say:before { content:""; position:absolute; left:50%; top:-5px; width:9px; height:9px; margin-left:-4.5px; background:Canvas; border-left:1px solid var(--ui-stroke-secondary); border-top:1px solid var(--ui-stroke-secondary); transform:rotate(45deg); }
 .office-say:hover { outline-color:var(--ui-accent); }
-.office-home { margin-top:2px; border:0; background:transparent; color:var(--ui-text-quaternary); font-size:10px; cursor:pointer; }
-.office-desk.is-active .office-plate { outline:1px solid var(--ui-accent); }
+.office-home { margin-top:2px; border:0; padding:2px 9px; border-radius:99px; color:color-mix(in srgb, CanvasText 72%, transparent); font:inherit; font-size:10px; cursor:pointer; }
+.office-home:hover { color:var(--ui-accent); }
+.office-desk.is-active .office-plate { box-shadow: 0 0 0 1.5px var(--ui-accent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); }
 .office-desk.is-think .office-desk-top { box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, var(--ui-accent) 35%, transparent); }
 .office-hearts { position:absolute; top:-10px; left:50%; display:flex; gap:4px; pointer-events:none; }
 .office-hearts span { color:#f48; font-size:11px; animation:office-heart 0.9s ease-out forwards; }
 .office-hearts span:nth-child(2) { animation-delay:.08s; }
 .office-hearts span:nth-child(3) { animation-delay:.16s; }
-.office-wander-layer { position:absolute; inset:0; pointer-events:none; }
+.office-wander-layer { position:absolute; inset:0; pointer-events:none; z-index:8; }
 .office-wander-layer .office-person { pointer-events:auto; }
 .office-dot { opacity:.25; }
 .office-dot-0 { animation:office-dot 1.1s ease-in-out infinite; }
@@ -1766,6 +2980,13 @@ const plugin = {
           }
         })
         .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('backdrop'))
+        .then(value => {
+          if (backdropNames().includes(value)) {
+            $backdrop.set(value)
+          }
+        })
+        .catch(() => undefined)
     } catch {
       /* no storage */
     }
@@ -1775,6 +2996,7 @@ const plugin = {
         for (const name of [...jobPollers.keys()]) {
           clearJob(name)
         }
+        stopMusicalChairs()
       })
     } catch {
       /* older shell */
@@ -1799,7 +3021,7 @@ const plugin = {
       data: {
         id: `${ID}.open`,
         label: 'Open office floor',
-        keywords: ['bots', 'desk', 'floor', 'office'],
+        keywords: ['bots', 'desk', 'floor', 'office', 'bar', 'hopscotch'],
         run: () => host.navigate('/office')
       }
     })
@@ -1831,5 +3053,16 @@ export const __test = {
   pickBotChatRow,
   resolvePicked,
   roamMs,
-  easeInOut
+  easeInOut,
+  backdropNames,
+  nextBackdrop,
+  idleBotNames,
+  chairCountForGame,
+  pickFreeStool,
+  nextBarStand,
+  placeChairs,
+  assignChairs,
+  beginWalk,
+  advanceWalk,
+  walkHop
 }

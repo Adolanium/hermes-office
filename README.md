@@ -25,6 +25,11 @@ Cute bits on the floor:
 - Click the carpet and everyone peeks.
 - After 7pm the room goes night and desk lamps warm up.
 - The plant leans when someone thinks. The clock ticks in 24 hour time. Click it to flip digital and analog. Drag it to move.
+- Cycle the room from the header: carpet, loft, garden, nightclub, or pizza parlor. Each one is a flat wall band and a tiled floor (tiny SVGs, no perspective) so the paper dolls and desks actually stand on it. Night still dims whatever is on.
+- Desks sit across from a bar. When they finish a task they walk over, linger, and cheer.
+- In the pizza parlor the bar is a pizza counter with one pie per round. A round starts whenever anyone gets a task. First bot to finish and reach the counter takes a slice and carries it around for a bit. Everyone after that gets "no pizza".
+- Hopscotch is chalked on the floor in the aisle. Tap a square to send an idle bot down it.
+- **chairs** in the header starts musical chairs. Thinking bots keep working.
 
 ## Install
 
