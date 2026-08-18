@@ -1,6 +1,7 @@
 # Hermes Office
 
-<img width="1132" height="697" alt="chrome_oBdOUrOaEx" src="https://github.com/user-attachments/assets/cc239719-4039-4590-bd51-1c4f4640d192" />
+<img width="877" height="686" alt="Hermes_2WQOW5UiOI" src="https://github.com/user-attachments/assets/183421d0-9c23-4e9e-abc8-9390601ceea3" />
+
 
 
 A Desktop plugin. One floor of desks, one desk per Bot Mode agent.
