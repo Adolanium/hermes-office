@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine };`,
     context
   )
 
@@ -345,6 +345,55 @@ test('typedText types out the screen and nameHash is stable', () => {
   assert.equal(nameHash('scout'), nameHash('scout'))
   assert.notEqual(nameHash('scout'), nameHash('scribe'))
   assert.ok(nameHash('') === 0)
+})
+
+test('skyState shares the night window with the room tint and sweeps 0..1', () => {
+  const { skyState, isNightHour } = loadHelpers()
+  const noon = new Date(2026, 5, 10, 13, 0)
+  const dusk = new Date(2026, 5, 10, 18, 0)
+  const late = new Date(2026, 5, 10, 22, 0)
+  const early = new Date(2026, 5, 11, 4, 0)
+
+  assert.equal(skyState(noon).night, isNightHour(noon))
+  assert.equal(skyState(late).night, isNightHour(late))
+  assert.equal(skyState(noon).tone, 'day')
+  assert.equal(skyState(dusk).tone, 'dusk')
+  assert.equal(skyState(late).tone, 'night')
+  assert.ok(skyState(noon).t > 0.4 && skyState(noon).t < 0.6, 'sun near the top at 1pm')
+  assert.ok(skyState(late).t > 0.2 && skyState(late).t < 0.3, 'moon a quarter across at 10pm')
+  assert.ok(skyState(early).t > 0.7, 'moon most of the way at 4am')
+  assert.equal(skyState(new Date(2026, 5, 10, 7, 0)).t, 0)
+})
+
+test('bored bots, weekly counters, and the recap line', () => {
+  const { isBored, weekStart, weekBump, weekLine, faceMood } = loadHelpers()
+  const day = 24 * 60 * 60 * 1000
+
+  assert.equal(isBored(0, 10 * day), false, 'never tasked is not bored')
+  assert.equal(isBored(1 * day, 2 * day), false)
+  assert.equal(isBored(1 * day, 4 * day), true)
+  assert.equal(faceMood({ bored: true }), 'bored')
+  assert.equal(faceMood({ bored: true, think: true }), 'think')
+
+  const wed = new Date(2026, 7, 19, 15, 0)
+  const mon = new Date(weekStart(wed))
+  assert.equal(mon.getDay(), 1)
+  assert.equal(mon.getHours(), 0)
+  assert.equal(weekStart(new Date(2026, 7, 17, 0, 0)), weekStart(wed), 'monday itself is the same week')
+
+  let w = weekBump(null, 'tasks', 'scout', wed.getTime())
+  w = weekBump(w, 'pizza', 'scout', wed.getTime())
+  w = weekBump(w, 'pizza', 'scout', wed.getTime())
+  w = weekBump(w, 'hops', 'scribe', wed.getTime())
+  assert.equal(w.tasks, 1)
+  assert.equal(w.pizzas.scout, 2)
+  assert.equal(w.hops, 1)
+  assert.equal(weekLine(w), 'This week: 1 task, scout ate 2 pizzas, 1 hop')
+  assert.equal(weekLine(null), null)
+
+  const nextWeek = weekBump(w, 'tasks', 'scout', wed.getTime() + 7 * day)
+  assert.equal(nextWeek.tasks, 1, 'a new monday starts fresh')
+  assert.equal(nextWeek.hops, 0)
 })
 
 test('advanceWalk follows a hopscotch path then arrives', () => {

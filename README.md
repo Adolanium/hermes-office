@@ -20,19 +20,24 @@ Give them a task from the bar at the bottom. It goes into the same forever **Bot
 
 Cute bits on the floor:
 
+- First open shows one hint bubble that says what the toy does. Close it or just start playing and it never comes back. Faces and hop squares have tooltips too.
 - They blink, breathe, and their eyes follow your mouse when it comes close. Hover a face and they flinch. Tap to pet. Hold still and they fall asleep in your hand.
 - Drag them around. They land with a squash and a puff of dust, then keep wandering. Drop two close together and they whisper. Two bots crossing paths say hi.
 - **Back to desk** is the only thing that sends them home. Every desk has an office chair. It wobbles while they are away.
 - Click the carpet and everyone peeks.
-- After 7pm the room goes night and desk lamps warm up. Bots left alone at their desks start to yawn, and after a few quiet minutes they nod off. A task or a pet wakes them.
+- The garden sky has a sun by day and a moon by night that cross the wall through the day. The office and loft have a window that shows the same sky. After 7pm the room goes night and desk lamps warm up. Bots left alone at their desks start to yawn, and after a few quiet minutes they nod off. A task or a pet wakes them.
 - The plant leans when someone thinks. The clock ticks in 24 hour time. Click it to flip digital and analog. Drag it to move.
 - Cycle the room from the header: carpet, loft, garden, nightclub, or pizza parlor. Each one is a flat wall band and a tiled floor (tiny SVGs, no perspective) so the paper dolls and desks actually stand on it. Night still dims whatever is on.
-- Sending a task flies a paper plane to the desk and the monitor boots up. The screen types out while they think. When they finish, confetti pops over the desk, they earn a star on their nameplate, and they walk to the bar. Two at the bar high five.
+- Sending a task pops a "?" over the bot, flies a paper plane to the desk, and the monitor boots up. Finishing pops a "!". The screen types out while they think. When they finish, confetti pops over the desk, they earn a star on their nameplate (stars are also written to the bot profile, so they follow the bot, not the machine), and they walk to the bar. Two at the bar high five.
 - Desks sit across from a bar with bottles, taps and a pint. Finish a task and they walk over, sit on a stool, linger, and cheer.
 - In the pizza parlor the bar is a pizza counter with one pie per round. A round starts whenever anyone gets a task. First bot to finish and reach the counter takes a slice and carries it around for a bit. Everyone after that gets "no pizza".
 - Hopscotch is chalked on the floor in the aisle. Tap a square and an idle bot hops the course out and back, landing on both squares of a pair, with the chalk lighting up under them.
 - **chairs** in the header starts musical chairs. Wooden chairs appear in the middle of the floor, music notes float up, and idle bots circle them. When the music stops everyone freezes for a beat, then races in. One is left standing. Bots at their desks watch and clap. Thinking bots keep working.
 - Each room has one small living thing: butterflies in the garden, a light sweep in the nightclub, a wood oven in the parlor, a bubbling water cooler in the office, a swaying pendant lamp in the loft. A tally board on the wall counts tasks finished.
+- A bot with no task for two days gets bored: chin on the desk, half closed eyes, doodling on the screen. A task fixes it.
+- The header shows a weekly recap once anything has happened: tasks done, who ate the most pizza, hops taken. Resets on Monday.
+- Keyboard: with a bot picked, arrows nudge it around the floor (Shift for bigger steps), Enter opens its chat, P pets it.
+- The room is a centred diorama with a fixed play height. It scrolls only when there are more desks than fit.
 - If your OS asks for reduced motion, the bobbing and bouncing turn off. Walks stay.
 
 ## Install

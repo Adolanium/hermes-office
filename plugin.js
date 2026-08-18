@@ -45,6 +45,12 @@ const $pizza = atom({ winner: null, at: 0 })
 const $puffs = atom([])
 const $planes = atom([])
 const $trophies = atom({})
+const $lastTask = atom({})
+const $week = atom(null)
+const $hint = atom(false)
+const $petPing = atom({})
+const OFFICE_NS = 'hermes-office'
+const BORED_MS = 2 * 24 * 60 * 60 * 1000
 let puffSeq = 0
 
 // A paper plane from the task bar to a desk. Root relative coordinates.
@@ -60,18 +66,59 @@ function flyPlane(from, to) {
   }, 900)
 }
 
-// One more finished task on the shelf for this bot.
+// One more finished task on the shelf for this bot. Kept locally for speed and
+// mirrored onto the bot's profile (ui_meta, our own namespace) so the count
+// follows the profile rather than this machine.
 function addTrophy(name) {
-  const next = { ...$trophies.get(), [name]: ($trophies.get()[name] || 0) + 1 }
+  const count = ($trophies.get()[name] || 0) + 1
+  const next = { ...$trophies.get(), [name]: count }
   $trophies.set(next)
   savePref('trophies', next)
+
+  try {
+    Promise.resolve(
+      host.request('profiles.configure', { name, ui_meta: { [OFFICE_NS]: { stars: count } } })
+    ).catch(() => undefined)
+  } catch {
+    /* older gateway */
+  }
+}
+
+// If the profile already carries more stars than we know about (another
+// machine, or a fresh install), take the higher number.
+function seedTrophies(roster) {
+  const local = $trophies.get()
+  let changed = false
+  const next = { ...local }
+
+  for (const bot of roster || []) {
+    const stars = Number(bot?.ui_meta?.[OFFICE_NS]?.stars || 0)
+    if (stars > (next[bot.name] || 0)) {
+      next[bot.name] = stars
+      changed = true
+    }
+  }
+
+  if (changed) {
+    $trophies.set(next)
+    savePref('trophies', next)
+  }
+}
+
+// Weekly recap: a few counters that reset every Monday.
+function bumpWeek(key, name) {
+  const now = Date.now()
+  const next = weekBump($week.get(), key, name, now)
+  $week.set(next)
+  savePref('week', next)
 }
 
 // Job done: confetti at the desk, a trophy, then off to the bar.
 function celebrate(name) {
   const now = Date.now()
-  patchFx(name, { clapUntil: now + 1100, confettiUntil: now + 950, nap: false, goBar: true, goHome: false })
+  patchFx(name, { clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
   addTrophy(name)
+  bumpWeek('tasks', name)
 }
 
 // A little dust ring at a foot position. Gone after half a second.
@@ -444,7 +491,7 @@ function typedText(text, elapsedMs, cps = 28) {
   return full.slice(0, n) + '\u258d'
 }
 
-function faceMood({ held, asleep, pet, clap, stretch, shy, peek, think }) {
+function faceMood({ held, asleep, pet, clap, stretch, shy, peek, think, bored }) {
   if (held && asleep) {
     return 'sleep'
   }
@@ -481,6 +528,10 @@ function faceMood({ held, asleep, pet, clap, stretch, shy, peek, think }) {
     return 'think'
   }
 
+  if (bored) {
+    return 'bored'
+  }
+
   return 'idle'
 }
 
@@ -507,6 +558,72 @@ function near(a, b, r) {
 function isNightHour(date = new Date()) {
   const hour = date.getHours()
   return hour >= 19 || hour < 7
+}
+
+// One clock for everything that depends on the time of day. Night is the same
+// window the room tint uses, so the sky can never disagree with the room.
+// `t` runs 0..1 across the sun's arc (7am to 7pm) or the moon's (7pm to 7am).
+function skyState(date = new Date()) {
+  const h = date.getHours() + date.getMinutes() / 60
+  const night = isNightHour(date)
+  const t = night ? (((h - 19 + 24) % 24) / 12) : ((h - 7) / 12)
+  const dusk = !night && h >= 17.5
+  const dawn = !night && h < 8.5
+  return { night, t: Math.max(0, Math.min(1, t)), tone: night ? 'night' : dusk ? 'dusk' : dawn ? 'dawn' : 'day' }
+}
+
+// A bot that has had no task for days, and is idle at its desk, is bored.
+function isBored(lastTaskAt, now, thresholdMs = BORED_MS_SLICE) {
+  if (!lastTaskAt) {
+    return false
+  }
+  return (now || 0) - lastTaskAt > thresholdMs
+}
+
+// Monday 00:00 local for the week that contains `date`.
+function weekStart(date = new Date()) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const day = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - day)
+  return d.getTime()
+}
+
+// Bump a weekly counter. Starts a fresh week when the Monday moved on.
+function weekBump(stats, key, name, now) {
+  const start = weekStart(new Date(now || Date.now()))
+  const base = stats && stats.start === start ? stats : { start, tasks: 0, hops: 0, pizzas: {} }
+  const next = { ...base, pizzas: { ...(base.pizzas || {}) } }
+
+  if (key === 'pizza') {
+    next.pizzas[name] = (next.pizzas[name] || 0) + 1
+  } else if (key === 'tasks' || key === 'hops') {
+    next[key] = (next[key] || 0) + 1
+  }
+
+  return next
+}
+
+function weekLine(stats) {
+  if (!stats || (!stats.tasks && !stats.hops && !Object.keys(stats.pizzas || {}).length)) {
+    return null
+  }
+
+  const bits = []
+  if (stats.tasks) {
+    bits.push(`${stats.tasks} task${stats.tasks === 1 ? '' : 's'}`)
+  }
+
+  const eaters = Object.entries(stats.pizzas || {}).sort((a, b) => b[1] - a[1])
+  if (eaters.length) {
+    const [who, n] = eaters[0]
+    bits.push(`${who} ate ${n} pizza${n === 1 ? '' : 's'}`)
+  }
+
+  if (stats.hops) {
+    bits.push(`${stats.hops} hop${stats.hops === 1 ? '' : 's'}`)
+  }
+
+  return `This week: ${bits.join(', ')}`
 }
 
 function clockLabel(date = new Date()) {
@@ -622,6 +739,7 @@ function idleBotNames(roster, jobs, activeProfile, turnBusy) {
 
 const FACE_HALF = 21
 const HOP_ROWS = [[1], [2], [3, 4], [5], [6, 7], [8]]
+const BORED_MS_SLICE = 2 * 24 * 60 * 60 * 1000
 
 // Out along the rows, turn at the end, and hop back down.
 function hopCourse(rows) {
@@ -1029,6 +1147,9 @@ function readFx(name, now) {
     drop: (row.dropUntil || 0) > now,
     boot: (row.bootUntil || 0) > now,
     hi: (row.hiUntil || 0) > now,
+    ask: (row.askUntil || 0) > now,
+    bang: (row.bangUntil || 0) > now,
+    petted: (row.petUntil || 0) > now,
     confetti: (row.confettiUntil || 0) > now,
     five: (row.fiveUntil || 0) > now,
     yawn: (row.yawnUntil || 0) > now,
@@ -1519,12 +1640,17 @@ function startHopscotch(name, roomEl) {
 
   const [first, ...rest] = points
   startWalk(name, first, roomEl, 'hopscotch', rest)
+  bumpWeek('hops', name)
 }
 
 // Someone got a task: they walk home, and a fresh pizza lands on the counter.
 function startRound(name) {
   const now = Date.now()
-  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700 })
+  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700, askUntil: now + 1400 })
+  const last = { ...$lastTask.get(), [name]: now }
+  $lastTask.set(last)
+  savePref('lastTask', last)
+  dismissHint()
   $pizza.set(freshPizza(Date.now()))
 }
 
@@ -1555,6 +1681,10 @@ function finishWalk(name, walk) {
     if ($backdrop.get() === 'pizza') {
       const { pizza, won } = claimPizza($pizza.get(), name, now)
       $pizza.set(pizza)
+      if (won && pizza.winner === name && !(pizza.counted || {})[name]) {
+        bumpWeek('pizza', name)
+        pizza.counted = { ...(pizza.counted || {}), [name]: true }
+      }
       patchFx(name, won ? { pizzaUntil: now + PIZZA_MS, lingerUntil: now + 6000 } : { noPizzaUntil: now + 4200 })
     }
   }
@@ -1848,7 +1978,8 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
   const shy = mood === 'shy' || mood === 'held'
   const sleep = mood === 'sleep'
   const peek = mood === 'peek'
-  const eyeY = peek ? 11 : shy ? 15 : 17
+  const bored = mood === 'bored'
+  const eyeY = peek ? 11 : shy ? 15 : bored ? 19 : 17
   const eyeL = shy ? 13.5 : 15
   const eyeR = shy ? 26.5 : 25
 
@@ -1898,8 +2029,8 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
                   animationDelay: `-${nameHash(name) % 2900}ms`
                 },
                 children: [
-                  jsx('ellipse', { cx: eyeL, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink }),
-                  jsx('ellipse', { cx: eyeR, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink })
+                  jsx('ellipse', { cx: eyeL, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : bored ? 1.2 : 2.4, fill: ink }),
+                  jsx('ellipse', { cx: eyeR, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : bored ? 1.2 : 2.4, fill: ink })
                 ]
               }),
               shy
@@ -1992,6 +2123,10 @@ function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza
     return 'thinking'
   }
 
+  if (face === 'bored') {
+    return 'bored'
+  }
+
   if (walkKind === 'hopscotch') {
     return 'hop hop'
   }
@@ -2032,13 +2167,14 @@ function PizzaSlice({ className }) {
   })
 }
 
-function Person({ bot, look, face, wander, closer, whisper, hi, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, style, onPetStart }) {
+function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, style, onPetStart }) {
   return jsxs('div', {
     className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop'),
     style,
     role: 'button',
     tabIndex: 0,
     'aria-label': `Pet ${look.title}`,
+    title: `${look.title}. Hover to startle, tap to pet, hold to send to sleep, drag to move.`,
     onPointerEnter: onPetStart.onEnter,
     onPointerLeave: onPetStart.onLeave,
     onPointerDown: onPetStart.onDown,
@@ -2054,8 +2190,8 @@ function Person({ bot, look, face, wander, closer, whisper, hi, five, yawn, chee
       face === 'pet' || face === 'clap' || cheers
         ? jsxs('div', { className: 'office-hearts', 'aria-hidden': true, children: [jsx('span', { children: '♥' }), jsx('span', { children: '♥' }), jsx('span', { children: '♥' })] })
         : null,
-      whisper || hi
-        ? jsx('div', { className: cn('office-whisper', hi && 'is-hi'), children: hi ? 'hi!' : '…' })
+      whisper || hi || ask || bang
+        ? jsx('div', { className: cn('office-whisper', (hi || ask || bang) && 'is-hi'), children: hi ? 'hi!' : ask ? '?' : bang ? '!' : '\u2026' })
         : null,
       wander ? jsx('span', { className: 'office-ground', 'aria-hidden': true }) : null,
       pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
@@ -2082,6 +2218,7 @@ function usePersonHandlers(bot, roomRef, held) {
     petTimer.current = setTimeout(() => setPet(false), 900)
     patchFx(bot.name, { stretchUntil: now + 700, closerUntil: now + 2600, nap: false, idleSince: 0 })
     pickBot(bot.name)
+    dismissHint()
     tap()
   }
 
@@ -2178,15 +2315,18 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   const seat = drag?.name === bot.name || walks[bot.name] ? true : seats[bot.name]
   const held = drag?.name === bot.name
   const { shy, pet, handlers } = usePersonHandlers(bot, roomRef, held)
+  const lastTask = useValue($lastTask)
+  const bored = !seat && !think && isBored(lastTask[bot.name], now)
   const face = faceMood({
     held,
     asleep: fx.nap || Boolean(drag?.asleep && held),
-    pet,
+    pet: pet || fx.petted,
     clap: fx.clap,
     stretch: fx.stretch || fx.yawn,
     shy,
     peek: peek && !seat,
-    think
+    think,
+    bored
   })
   const output = outputText(bot)
   const game = useValue($game)
@@ -2229,7 +2369,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                 ]
               })
             : null,
-          jsx(Monitor, { on: think, text: output, since: fx.thinkSince, now, boot: fx.boot }),
+          jsx(Monitor, { on: think, text: output, since: fx.thinkSince, now, boot: fx.boot, doodle: bored }),
           fx.confetti
             ? jsx('div', {
                 className: 'office-confetti',
@@ -2251,6 +2391,8 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                     closer: fx.closer,
                     whisper: fx.whisper,
                     hi: fx.hi,
+                    ask: fx.ask,
+                    bang: fx.bang,
                     yawn: fx.yawn,
                     style: watchDx ? { '--wdx': watchDx } : undefined,
                     onPetStart: { ...handlers, isActive }
@@ -2309,7 +2451,17 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   })
 }
 
-function Monitor({ on, text, since, now, boot }) {
+function Doodle() {
+  return jsxs('svg', { viewBox: '0 0 48 26', className: 'office-doodle', 'aria-hidden': true, children: [
+    jsx('circle', { cx: 12, cy: 13, r: 7, fill: 'none', stroke: '#c9d4c4', strokeWidth: 1.2 }),
+    jsx('circle', { cx: 9.5, cy: 11, r: 1, fill: '#c9d4c4' }),
+    jsx('circle', { cx: 14.5, cy: 11, r: 1, fill: '#c9d4c4' }),
+    jsx('path', { d: 'M9 15 Q12 18 15 15', fill: 'none', stroke: '#c9d4c4', strokeWidth: 1.2, strokeLinecap: 'round' }),
+    jsx('path', { d: 'M24 18 C 27 6, 31 22, 34 10 S 41 20, 44 8', fill: 'none', stroke: '#c9d4c4', strokeWidth: 1.2, strokeLinecap: 'round', className: 'office-doodle-line' })
+  ] })
+}
+
+function Monitor({ on, text, since, now, boot, doodle }) {
   const copy = on ? typedText(text || '> working on it', since ? Math.max(0, (now || 0) - since) : 1e9) : text
 
   return jsxs('div', {
@@ -2321,7 +2473,7 @@ function Monitor({ on, text, since, now, boot }) {
         children: [
           jsx('div', {
             className: cn('office-screen', on && 'is-on', copy && 'has-copy', boot && 'is-boot'),
-            children: copy ? jsx('div', { className: 'office-screen-copy', children: copy }) : null
+            children: !on && doodle ? jsx(Doodle, {}) : copy ? jsx('div', { className: 'office-screen-copy', children: copy }) : null
           }),
           jsx('div', { className: 'office-monitor-cam' })
         ]
@@ -2381,7 +2533,7 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     face: faceMood({
       held,
       asleep: fx.nap || Boolean(drag?.asleep && held),
-      pet,
+      pet: pet || fx.petted,
       clap: fx.clap,
       stretch: fx.stretch,
       shy,
@@ -2397,6 +2549,8 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     walkKind: walk?.kind || null,
     drop: fx.drop,
     hi: fx.hi,
+    ask: fx.ask,
+    bang: fx.bang,
     five: fx.five,
     gamePhase: game?.players?.includes(bot.name) ? game.phase : null,
     leftover: game?.leftover === bot.name,
@@ -2646,6 +2800,7 @@ function Hopscotch({ onHop, now }) {
                   className: cn('office-hop', lit.has(String(n)) && 'is-lit'),
                   'data-hop': String(n),
                   'aria-label': `Hopscotch square ${n}`,
+                  title: 'Tap to send an idle bot down the hopscotch',
                   onPointerDown: event => {
                     event.stopPropagation()
                     onHop?.()
@@ -2819,8 +2974,43 @@ function FloorTools({ roster, jobs, activeProfile, turnBusy, roomRef, idleCount 
 
 // One small living thing per room, so each skin feels like a place. Plus the
 // tally board on the wall once anyone has finished a task.
-function Ambience({ backdrop, tally }) {
+function SunMoon({ sky }) {
+  const left = `calc(8% + ${(sky.t * 84).toFixed(1)}%)`
+  const top = 46 - Math.sin(sky.t * Math.PI) * 32
+  return sky.night
+    ? jsxs('svg', { className: 'office-moon', viewBox: '0 0 20 20', width: 18, height: 18, style: { left, top }, children: [
+        jsx('circle', { cx: 10, cy: 10, r: 8, fill: '#f4f0d8' }),
+        jsx('circle', { cx: 13.5, cy: 8, r: 7, fill: '#0f1a3a' })
+      ] })
+    : jsx('svg', { className: 'office-sun', viewBox: '0 0 20 20', width: 22, height: 22, style: { left, top }, children: jsx('circle', { cx: 10, cy: 10, r: 8, fill: sky.tone === 'day' ? '#ffd44d' : '#ffb347' }) })
+}
+
+function WallWindow({ sky }) {
+  const glass = { day: '#a9d8f2', dawn: '#f6c9a0', dusk: '#f0a05a', night: '#182a58' }[sky.tone]
+  const cx = 6 + sky.t * 28
+  const cy = 24 - Math.sin(sky.t * Math.PI) * 12
+  return jsxs('svg', { className: 'office-window', viewBox: '0 0 44 40', width: 44, height: 40, children: [
+    jsx('rect', { x: 2, y: 2, width: 40, height: 34, rx: 3, fill: glass }),
+    sky.night
+      ? jsxs('g', { fill: '#f4f0d8', children: [jsx('circle', { cx: 12, cy: 10, r: .9 }), jsx('circle', { cx: 30, cy: 14, r: .8 }), jsx('circle', { cx: 22, cy: 24, r: .7 }), jsx('circle', { cx: cx, cy: cy, r: 3.2 })] })
+      : jsx('circle', { cx, cy, r: 3.6, fill: sky.tone === 'day' ? '#ffd44d' : '#ffb347' }),
+    jsx('rect', { x: 20.5, y: 2, width: 3, height: 34, fill: '#f4efe6' }),
+    jsx('rect', { x: 2, y: 17.5, width: 40, height: 3, fill: '#f4efe6' }),
+    jsx('rect', { x: 2, y: 2, width: 40, height: 34, rx: 3, fill: 'none', stroke: '#f4efe6', strokeWidth: 3 }),
+    jsx('rect', { x: 0, y: 35, width: 44, height: 4, rx: 1, fill: '#e2d9c8' })
+  ] })
+}
+
+function Ambience({ backdrop, tally, sky }) {
   const bits = []
+
+  if (sky && backdrop === 'garden') {
+    bits.push(jsx(SunMoon, { sky }, 'sunmoon'))
+  }
+
+  if (sky && (backdrop === 'carpet' || backdrop === 'loft')) {
+    bits.push(jsx(WallWindow, { sky }, 'window'))
+  }
 
   if (tally > 0) {
     bits.push(jsx('div', { className: 'office-tally office-chip', title: 'Tasks finished in this office', children: `${tally} done` }, 'tally'))
@@ -2877,6 +3067,31 @@ function Ambience({ backdrop, tally }) {
   }
 
   return jsx(Fragment, { children: bits })
+}
+
+// First run only. One bubble that says what the toy does. Closing it, or
+// doing any of the things it mentions, puts it away for good.
+function HintBubble({ roster, onClose }) {
+  const first = roster[0] ? botLook(roster[0]).title : 'a bot'
+  return jsxs('div', {
+    className: 'office-hint',
+    role: 'note',
+    children: [
+      jsxs('div', { className: 'office-hint-copy', children: [
+        jsx('b', { children: `Try petting ${first}.` }),
+        ' Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.'
+      ] }),
+      jsx('button', { type: 'button', className: 'office-hint-close', 'aria-label': 'Dismiss', onClick: onClose, children: '\u00d7' })
+    ]
+  })
+}
+
+function dismissHint() {
+  if (!$hint.get()) {
+    return
+  }
+  $hint.set(false)
+  savePref('hintSeen', true)
 }
 
 function OfficeProps({ now, roomRef }) {
@@ -3161,10 +3376,13 @@ function OfficeFloor() {
   useValue($avatars)
   const now = usePulse(200)
   const night = isNightHour(new Date(now))
+  const sky = skyState(new Date(now))
   const peek = useValue($peekUntil) > now
   const jobs = useValue($jobs)
   const backdrop = useValue($backdrop)
   const trophies = useValue($trophies)
+  const hint = useValue($hint)
+  const week = useValue($week)
   const roomRef = useRef(null)
   const prevBusy = useRef(false)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
@@ -3197,6 +3415,69 @@ function OfficeFloor() {
   useEffect(() => {
     tickNight(now, night, roster, jobs, activeProfile, turnBusy)
   }, [now, night, roster, jobs, activeProfile, turnBusy])
+
+  useEffect(() => {
+    seedTrophies(roster)
+  }, [roster])
+
+  // Keyboard: arrows nudge the picked bot, Enter opens its chat, P pets it.
+  // Ignored while typing in a field.
+  useEffect(() => {
+    const onKey = event => {
+      const tag = event.target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable || event.metaKey || event.ctrlKey || event.altKey) {
+        return
+      }
+
+      const bot = roster.find(row => row.name === selected)
+      if (!bot || !roomRef.current) {
+        return
+      }
+
+      const step = event.shiftKey ? 48 : 24
+      const arrows = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
+
+      if (arrows[event.key]) {
+        event.preventDefault()
+        if (jobs[bot.name] || $game.get()) {
+          return
+        }
+        const [dx, dy] = arrows[event.key]
+        const from = currentPos(bot.name, roomRef.current)
+        if (!from) {
+          return
+        }
+        const box = roamBox(roomRef.current)
+        const next = {
+          x: Math.max(box.x0, Math.min(box.x1, from.x + dx)),
+          y: Math.max(box.y0, Math.min(box.y1, from.y + dy))
+        }
+        clearRoam(bot.name)
+        setWalk(bot.name, null)
+        saveSeats({ ...$seats.get(), [bot.name]: next })
+        patchFx(bot.name, { atBar: false, lingerUntil: 0, nap: false })
+        dismissHint()
+        return
+      }
+
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        void openBot(bot)
+        return
+      }
+
+      if (event.key === 'p' || event.key === 'P') {
+        event.preventDefault()
+        const at = Date.now()
+        patchFx(bot.name, { petUntil: at + 900, stretchUntil: at + 700, closerUntil: at + 2600, nap: false, idleSince: 0 })
+        dismissHint()
+        tap()
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [roster, selected, jobs])
 
   useEffect(() => () => stopMusicalChairs(), [])
   useEyeTracking(roomRef)
@@ -3248,6 +3529,9 @@ function OfficeFloor() {
                     idleCount
                   })
                 : null,
+              weekLine(week)
+                ? jsx('div', { className: 'office-recap', title: weekLine(week), children: weekLine(week) })
+                : null,
               jsxs('div', {
                 className: 'office-count',
                 children: [
@@ -3259,14 +3543,15 @@ function OfficeFloor() {
           })
         ]
       }),
-      jsxs('div', {
+      jsx('div', { className: 'office-stage-wrap', children: jsxs('div', {
         className: cn('office-room', `is-${backdrop}`),
         ref: roomRef,
         onPointerDown: onFloor,
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
-          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0) }),
+          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky }),
+          hint ? jsx(HintBubble, { roster, onClose: dismissHint }) : null,
           jsx(OfficeProps, { now, roomRef }),
           jsx(GameChairs, {}),
           jsx(Puffs, {}),
@@ -3326,7 +3611,7 @@ function OfficeFloor() {
                     ]
                   })
         ]
-      }),
+      }) }),
       roster.length ? jsx(TaskBar, { roster, activeProfile }) : null,
       jsx(Planes, {})
     ]
@@ -3363,7 +3648,20 @@ function injectOfficeCss() {
   }
 
   const css = `
-.office-root { position:relative; display:flex; flex-direction:column; height:100%; min-height:0; background:var(--ui-bg, transparent); color:var(--ui-text-secondary); }
+.office-root { --office-radius:10px; --office-pill:999px; --office-card-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 16%, transparent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); --office-chip-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent), 0 1px 3px rgba(0,0,0,.22); position:relative; display:flex; flex-direction:column; height:100%; min-height:0; background:var(--ui-bg, transparent); color:var(--ui-text-secondary); }
+.office-stage-wrap { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; }
+.office-recap { font-size:11px; color:var(--ui-text-tertiary); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.office-hint { position:absolute; left:206px; top:${WALL_H + 14}px; z-index:12; max-width:300px; display:flex; gap:8px; align-items:flex-start; padding:10px 10px 10px 12px; border-radius:var(--office-radius); background:Canvas; color:CanvasText; font-size:12px; line-height:1.4; box-shadow: var(--office-card-shadow); animation: office-hint .5s cubic-bezier(.2,.9,.3,1.2) 1; }
+.office-hint b { font-weight:600; }
+.office-hint:before { content:""; position:absolute; left:-6px; top:18px; width:12px; height:12px; background:Canvas; transform:rotate(45deg); box-shadow: -1px 1px 0 color-mix(in srgb, CanvasText 16%, transparent); }
+.office-hint-close { flex-shrink:0; width:22px; height:22px; border:0; border-radius:99px; background:transparent; color:CanvasText; font:inherit; font-size:15px; line-height:1; cursor:pointer; opacity:.7; }
+.office-hint-close:hover { opacity:1; background:color-mix(in srgb, CanvasText 10%, transparent); }
+.office-sun, .office-moon { position:absolute; z-index:0; pointer-events:none; filter: drop-shadow(0 0 6px rgba(255,220,120,.6)); transition: left 60s linear, top 60s linear; }
+.office-moon { filter: drop-shadow(0 0 5px rgba(244,240,216,.5)); }
+.office-window { position:absolute; right:24%; top:12px; z-index:0; pointer-events:none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+.office-doodle { display:block; width:100%; height:100%; padding:2px; box-sizing:border-box; opacity:.8; }
+.office-doodle-line { stroke-dasharray:60; stroke-dashoffset:60; animation: office-doodle 6s ease-in-out infinite; }
+.office-face-bored { transform: translateY(5px) rotate(-7deg); }
 .office-plane-layer { position:absolute; inset:0; pointer-events:none; z-index:40; overflow:hidden; }
 .office-plane { position:absolute; margin:-8px 0 0 -12px; transform-origin:50% 50%; animation: office-plane .8s cubic-bezier(.3,.6,.4,1) forwards; filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }
 .office-confetti { position:absolute; left:50%; top:60px; width:0; height:0; z-index:9; pointer-events:none; }
@@ -3401,16 +3699,16 @@ function injectOfficeCss() {
 .office-pick { position:relative; }
 .office-pick-btn { max-width:160px; overflow:hidden; text-overflow:ellipsis; border:0; background:transparent; color:var(--ui-text-primary, inherit); font:inherit; cursor:pointer; padding:0 2px; }
 .office-pick-btn:after { content:" ▾"; color:var(--ui-text-tertiary); }
-.office-pick-menu { position:absolute; left:0; bottom:calc(100% + 6px); min-width:148px; max-height:220px; overflow:auto; z-index:30; padding:4px; border-radius:8px; border:1px solid var(--ui-stroke-primary, var(--ui-stroke-secondary)); background:Canvas; color:CanvasText; box-shadow:0 10px 28px color-mix(in srgb, #000 22%, transparent); }
+.office-pick-menu { position:absolute; left:0; bottom:calc(100% + 6px); min-width:148px; max-height:220px; overflow:auto; z-index:30; padding:4px; border-radius:var(--office-radius); border:0; background:Canvas; color:CanvasText; box-shadow: var(--office-card-shadow), 0 10px 28px color-mix(in srgb, #000 22%, transparent); }
 .office-pick-item { display:block; width:100%; text-align:left; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; padding:6px 8px; border-radius:6px; cursor:pointer; }
 .office-pick-item:hover, .office-pick-item.is-on { background:color-mix(in srgb, var(--ui-accent) 18%, Canvas); color:inherit; }
-.office-task-input { flex:1; min-width:0; height:32px; padding:0 10px; border:1px solid var(--ui-stroke-secondary); border-radius:8px; background:color-mix(in srgb, var(--ui-bg) 86%, transparent); color:inherit; font:inherit; }
+.office-task-input { flex:1; min-width:0; height:32px; padding:0 10px; border:1px solid var(--ui-stroke-secondary); border-radius:var(--office-radius); background:color-mix(in srgb, var(--ui-bg) 86%, transparent); color:inherit; font:inherit; }
 .office-task-input:focus { outline:1px solid var(--ui-accent); }
 .office-task-input:disabled { opacity:.7; }
-.office-task-send { height:32px; padding:0 12px; border:0; border-radius:8px; background:var(--ui-accent); color:var(--ui-accent-fg, #fff); font-size:12px; cursor:pointer; }
+.office-task-send { height:32px; padding:0 12px; border:0; border-radius:var(--office-radius); background:var(--ui-accent); color:var(--ui-accent-fg, #fff); font-size:12px; cursor:pointer; }
 .office-task-send:disabled { opacity:.45; cursor:default; }
 .office-desk.is-picked .office-plate { outline:1px dashed var(--ui-accent); outline-offset:1px; }
-.office-room { position:relative; flex:1; min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:#557b8c; }
+.office-room { position:relative; flex:0 1 auto; max-height:100%; min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:#557b8c; }
 .office-wall { position:absolute; inset:0 0 auto 0; height:${WALL_H}px; pointer-events:none; }
 .office-wall:after { content:""; position:absolute; left:0; right:0; top:100%; height:12px; background:linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,0)); }
 ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('\n')}
@@ -3433,11 +3731,11 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-clock-pin { position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px; border-radius:99px; background:CanvasText; }
 .office-clock-digits { font-size:10px; font-variant-numeric:tabular-nums; color:CanvasText; background:Canvas; padding:0 5px; border-radius:99px; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent); }
 
-.office-floor { position:relative; z-index:1; display:flex; align-items:stretch; box-sizing:border-box; min-width:560px; min-height:100%; padding:${WALL_H + 10}px 0 16px; }
+.office-floor { position:relative; z-index:1; display:flex; align-items:stretch; box-sizing:border-box; min-width:560px; min-height:${WALL_H + 380}px; padding:${WALL_H + 10}px 0 16px; }
 .office-work { flex:1 1 56%; min-width:0; }
 .office-grid { position:relative; display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:18px; padding:8px 14px 20px; min-height:0; }
 .office-aisle { flex:0 0 84px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:4px; padding:10px 6px 16px; z-index:2; }
-.office-chip, .office-hop-label, .office-bar-sign, .office-status, .office-home { background:Canvas; color:CanvasText; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent), 0 1px 3px rgba(0,0,0,.22); }
+.office-chip, .office-hop-label, .office-bar-sign, .office-status, .office-home { background:Canvas; color:CanvasText; box-shadow: var(--office-chip-shadow); }
 .office-hop-label { font-size:9px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; padding:1px 6px; border-radius:99px; margin-bottom:4px; }
 .office-hop-row { display:flex; gap:4px; }
 .office-hop { width:30px; height:28px; padding:0; border:2px solid #f6f2e6; border-radius:5px; background:color-mix(in srgb, Canvas 90%, transparent); color:CanvasText; font:inherit; font-size:11px; font-weight:700; cursor:pointer; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 1px 3px rgba(0,0,0,.2); }
@@ -3462,7 +3760,6 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-room.is-nightclub .office-bar-stool { background:#2a1830; box-shadow:0 3px 0 #120814, inset 0 1px 0 #f4a, 0 6px 5px -1px rgba(0,0,0,.5); }
 .office-room.is-pizza .office-bar-sign { color:#fff; background:#c9302c; letter-spacing:.2em; box-shadow:0 1px 0 rgba(0,0,0,.25); }
 .office-room.is-pizza .office-bar-shelf { background:linear-gradient(180deg, #e9dcc6, #cdbb9d); box-shadow: inset 0 1px 0 #fff8ea; }
-.office-room.is-pizza .office-bar-shelf { box-shadow: inset 0 1px 0 #fff8ea; }
 .office-room.is-pizza .office-bar-shelf:before { content:""; background:#c9302c; width:12px; height:8px; left:14%; }
 .office-room.is-pizza .office-bar-shelf:after { content:""; background:#c9302c; width:12px; height:8px; left:30%; }
 .office-room.is-pizza .office-bar-counter { justify-content:center; padding-right:0; background:linear-gradient(180deg, #ececec 0 50%, #c9302c 50% 62.5%, #ececec 62.5% 75%, #c9302c 75% 87.5%, #ececec 87.5%); box-shadow:0 6px 0 #a3a3a3, 0 12px 10px -2px rgba(0,0,0,.35); }
@@ -3478,7 +3775,7 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-game-layer { position:absolute; inset:0; pointer-events:none; z-index:4; }
 .office-game-chair { position:absolute; display:block; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
 .office-game-chair.is-claimed { filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)) drop-shadow(0 0 4px var(--ui-accent)); }
-.office-empty { padding:120px 20px 40px; text-align:center; color:var(--ui-text-tertiary); font-size:13px; }
+.office-empty { min-height:${WALL_H + 200}px; padding:120px 20px 40px; text-align:center; color:var(--ui-text-tertiary); font-size:13px; }
 .office-desk { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 10px 10px; border:0; border-radius:16px; background:rgba(0,0,0,.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,.10); color:inherit; text-align:center; user-select:none; -webkit-user-drag:none; }
 .office-room.is-nightclub .office-desk { background:rgba(255,255,255,.07); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .office-stage { position:relative; width:100%; min-height:118px; display:flex; flex-direction:column; align-items:center; }
@@ -3536,11 +3833,11 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-status.is-idle { color:color-mix(in srgb, CanvasText 62%, transparent); }
 .office-person.is-shy .office-status, .office-person.is-held .office-status { color:#f09; }
 .office-whisper { position:absolute; top:-14px; right:-6px; font-size:12px; color:CanvasText; background:Canvas; border-radius:8px; padding:0 5px; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent); }
-.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:9px; background:Canvas; color:CanvasText; text-align:center; cursor:pointer; box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 16%, transparent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); }
+.office-plate { position:relative; z-index:2; width:100%; padding:6px 8px 7px; border:0; border-radius:var(--office-radius); background:Canvas; color:CanvasText; text-align:center; cursor:pointer; box-shadow: var(--office-card-shadow); }
 .office-plate:hover { box-shadow: 0 0 0 1px var(--ui-accent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); }
 .office-name { font-size:13px; font-weight:600; color:CanvasText; }
 .office-handle { font-size:11px; color:color-mix(in srgb, CanvasText 60%, transparent); }
-.office-say { position:relative; z-index:2; width:100%; margin-top:2px; padding:8px 10px 9px; border:0; border-radius:12px; background:Canvas; color:CanvasText; font:inherit; font-size:12px; line-height:1.35; text-align:left; cursor:pointer; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; outline:1px solid var(--ui-stroke-secondary); box-shadow:0 1px 0 color-mix(in srgb, #000 10%, transparent), 0 8px 18px color-mix(in srgb, #000 12%, transparent); }
+.office-say { position:relative; z-index:2; width:100%; margin-top:2px; padding:8px 10px 9px; border:0; border-radius:var(--office-radius); background:Canvas; color:CanvasText; font:inherit; font-size:12px; line-height:1.35; text-align:left; cursor:pointer; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; box-shadow: var(--office-card-shadow); }
 .office-say:before { content:""; position:absolute; left:50%; top:-5px; width:9px; height:9px; margin-left:-4.5px; background:Canvas; border-left:1px solid var(--ui-stroke-secondary); border-top:1px solid var(--ui-stroke-secondary); transform:rotate(45deg); }
 .office-say:hover { outline-color:var(--ui-accent); }
 .office-home { margin-top:2px; border:0; padding:2px 9px; border-radius:99px; color:color-mix(in srgb, CanvasText 72%, transparent); font:inherit; font-size:10px; cursor:pointer; }
@@ -3577,6 +3874,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-bubble { 0% { transform: translateY(0); opacity:.9; } 100% { transform: translateY(-11px); opacity:0; } }
 @keyframes office-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
 @keyframes office-chew { 0%,100% { transform: scaleX(1) rotate(0); } 50% { transform: scaleX(1.06) rotate(-3deg); } }
+@keyframes office-hint { 0% { transform: translateY(8px) scale(.96); opacity:0; } 100% { transform: none; opacity:1; } }
+@keyframes office-doodle { 0% { stroke-dashoffset:60; } 50% { stroke-dashoffset:0; } 100% { stroke-dashoffset:0; } }
 @keyframes office-blink { 0%, 94%, 100% { transform: scaleY(1); } 96%, 98% { transform: scaleY(.08); } }
 @keyframes office-breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1.2px); } }
 @keyframes office-drop { 0% { transform: scale(1.22, .78); } 40% { transform: scale(.92, 1.08); } 70% { transform: scale(1.04, .97); } 100% { transform: scale(1, 1); } }
@@ -3584,7 +3883,7 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-puff-dot { 0% { transform: translate(0, 0); opacity:1; } 100% { transform: translate(var(--dx), -10px); opacity:0; } }
 @keyframes office-boot { 0% { filter: brightness(3) contrast(1.4); } 30% { filter: brightness(.6); } 60% { filter: brightness(2); } 100% { filter: brightness(1); } }
 @media (prefers-reduced-motion: reduce) {
-  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note { animation: none !important; }
+  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint { animation: none !important; }
   .office-eyes { transition: none; }
 }
 `
@@ -3628,6 +3927,25 @@ const plugin = {
           }
         })
         .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('lastTask'))
+        .then(value => {
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            $lastTask.set(value)
+          }
+        })
+        .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('week'))
+        .then(value => {
+          if (value && typeof value === 'object' && typeof value.start === 'number') {
+            $week.set(value)
+          }
+        })
+        .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('hintSeen'))
+        .then(value => {
+          $hint.set(!value)
+        })
+        .catch(() => $hint.set(true))
       Promise.resolve(ctx.storage?.get?.('trophies'))
         .then(value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
