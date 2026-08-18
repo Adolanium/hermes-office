@@ -3897,7 +3897,7 @@ function injectOfficeCss() {
 .office-task-send { height:32px; padding:0 12px; border:0; border-radius:var(--office-radius); background:var(--ui-accent); color:var(--ui-accent-fg, #fff); font-size:12px; cursor:pointer; }
 .office-task-send:disabled { opacity:.45; cursor:default; }
 .office-desk.is-picked .office-plate { outline:1px dashed var(--ui-accent); outline-offset:1px; }
-.office-room { position:relative; flex:0 1 auto; max-height:100%; min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:#557b8c; }
+.office-room { position:relative; flex:1 1 auto; max-height:min(100%, 780px); min-height:0; margin:0 12px; overflow:auto; border:1px solid var(--ui-stroke-secondary); border-radius:12px; background:#557b8c; }
 .office-wall { position:absolute; inset:0 0 auto 0; height:${WALL_H}px; pointer-events:none; }
 .office-wall:after { content:""; position:absolute; left:0; right:0; top:100%; height:12px; background:linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,0)); }
 ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('\n')}
