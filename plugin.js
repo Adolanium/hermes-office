@@ -47,6 +47,7 @@ const $planes = atom([])
 const $trophies = atom({})
 const $lastTask = atom({})
 const $week = atom(null)
+const $month = atom(null)
 const $hint = atom('off')
 const $news = atom({})
 const $ritual = atom({ hour: -1, at: 0 })
@@ -109,6 +110,13 @@ function seedTrophies(roster) {
   }
 }
 
+// Employee of the month: tasks per bot this calendar month.
+function bumpMonth(name) {
+  const next = monthBump($month.get(), name, Date.now())
+  $month.set(next)
+  savePref('month', next)
+}
+
 // Weekly recap: a few counters that reset every Monday.
 function bumpWeek(key, name) {
   const now = Date.now()
@@ -131,6 +139,7 @@ function celebrate(name) {
   patchFx(name, { doneRound: round, clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
   addTrophy(name)
   bumpWeek('tasks', name)
+  bumpMonth(name)
   leaveNote(name, now)
   advanceHint('play')
 }
@@ -654,6 +663,36 @@ function weekBump(stats, key, name, now) {
   }
 
   return next
+}
+
+// First of the month, local midnight.
+function monthStart(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime()
+}
+
+function monthBump(stats, name, now) {
+  const start = monthStart(new Date(now || Date.now()))
+  const base = stats && stats.start === start ? stats : { start, tasks: {}, holder: null }
+  const tasks = { ...(base.tasks || {}), [name]: ((base.tasks || {})[name] || 0) + 1 }
+  const holder = monthLeader({ ...base, tasks }, base.holder)
+  return { start, tasks, holder }
+}
+
+// Who has the most tasks this month. Ties keep the current holder, so a bot
+// has to pass them, not just match them, to take the frame.
+function monthLeader(stats, prevHolder) {
+  const tasks = (stats && stats.tasks) || {}
+  let best = null
+  let bestN = 0
+
+  for (const [name, n] of Object.entries(tasks)) {
+    if (n > bestN || (n === bestN && name === prevHolder)) {
+      best = name
+      bestN = n
+    }
+  }
+
+  return bestN > 0 ? best : null
 }
 
 function weekLine(stats) {
@@ -3100,8 +3139,34 @@ function WallWindow({ sky }) {
   ] })
 }
 
-function Ambience({ backdrop, tally, sky }) {
+// A framed portrait on the wall for the bot with the most tasks this month.
+function EmployeeOfMonth({ roster }) {
+  const stats = useValue($month)
+  const holder = stats && stats.start === monthStart(new Date()) ? stats.holder : null
+  const bot = holder ? roster.find(row => row.name === holder) : null
+  if (!bot) {
+    return null
+  }
+
+  const look = botLook(bot)
+  const n = stats.tasks?.[holder] || 0
+  const month = new Date().toLocaleString(undefined, { month: 'long' })
+
+  return jsxs('div', {
+    className: 'office-eom',
+    title: `Employee of the month: ${look.title}, ${n} task${n === 1 ? '' : 's'} in ${month}`,
+    children: [
+      jsx('div', { className: 'office-eom-frame', children: jsx(WorkerFace, { color: look.color, image: look.image, mood: 'idle', size: 30, name: bot.name }) }),
+      jsx('div', { className: 'office-eom-plate', children: 'employee of the month' }),
+      jsx('div', { className: 'office-eom-name', children: look.title })
+    ]
+  }, holder)
+}
+
+function Ambience({ backdrop, tally, sky, roster }) {
   const bits = []
+
+  bits.push(jsx(EmployeeOfMonth, { roster: roster || [] }, 'eom'))
 
   if (sky && backdrop === 'garden') {
     bits.push(jsx(SunMoon, { sky }, 'sunmoon'))
@@ -3717,7 +3782,7 @@ function OfficeFloor() {
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
-          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky }),
+          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky, roster }),
           hint === 'task' || hint === 'play' ? jsx(HintBubble, { roster, stage: hint, onClose: dismissHint }) : null,
           jsx(OfficeProps, {
             now,
@@ -3858,6 +3923,11 @@ function injectOfficeCss() {
 .office-stars { margin-left:6px; color:#d9a422; font-weight:600; }
 .office-note { position:absolute; font-size:14px; color:CanvasText; text-shadow: 0 0 2px Canvas, 0 0 6px Canvas; animation: office-note 1.8s ease-in-out infinite; animation-delay: var(--d, 0s); opacity:0; }
 .office-ding { position:absolute; top:22px; left:50%; transform:translateX(-50%); font-size:11px; font-weight:700; color:#c9302c; padding:1px 8px; border-radius:99px; animation: office-ding 1.4s ease-out forwards; z-index:4; }
+.office-eom { position:absolute; left:24%; top:6px; z-index:1; display:grid; justify-items:center; gap:2px; transform-origin:50% 0; animation: office-eom-hang .9s cubic-bezier(.3,1.4,.4,1) 1; }
+.office-eom-frame { width:44px; height:44px; box-sizing:border-box; padding:4px; border-radius:4px; background:linear-gradient(135deg, #f0d27a, #b8892c 45%, #f2d98a 55%, #a87a20); box-shadow: 0 2px 4px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.4); }
+.office-eom-frame .office-face { width:36px; height:36px; background:#f7f2e4; border-radius:3px; }
+.office-eom-plate { font-size:7px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#3a2a10; background:linear-gradient(180deg, #e8c86a, #c9a03a); padding:1px 5px; border-radius:2px; box-shadow: 0 1px 0 rgba(0,0,0,.3); white-space:nowrap; }
+.office-eom-name { font-size:9px; font-weight:600; color:CanvasText; background:Canvas; padding:0 6px; border-radius:99px; box-shadow: var(--office-chip-shadow); max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .office-tally { position:absolute; top:14px; left:50%; transform:translateX(-50%); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:99px; z-index:1; }
 .office-butterfly { position:absolute; z-index:6; pointer-events:none; }
 .office-butterfly.is-a { left:30%; top:40%; animation: office-fly-a 16s ease-in-out infinite; }
@@ -4063,6 +4133,7 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-bubble { 0% { transform: translateY(0); opacity:.9; } 100% { transform: translateY(-11px); opacity:0; } }
 @keyframes office-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
 @keyframes office-chew { 0%,100% { transform: scaleX(1) rotate(0); } 50% { transform: scaleX(1.06) rotate(-3deg); } }
+@keyframes office-eom-hang { 0% { transform: rotate(-9deg) translateY(-6px); opacity:0; } 60% { transform: rotate(4deg); opacity:1; } 100% { transform: none; } }
 @keyframes office-memo { 0% { transform: translateY(-10px) rotate(-12deg); opacity:0; } 100% { transform: none; opacity:1; } }
 @keyframes office-quiet { to { opacity:0; } }
 @keyframes office-hint { 0% { transform: translateY(8px) scale(.96); opacity:0; } 100% { transform: none; opacity:1; } }
@@ -4076,6 +4147,7 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @media (prefers-reduced-motion: reduce) {
   .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news { animation: none !important; }
   .office-status.is-quiet { animation: none; opacity:.35; }
+  .office-eom { animation: none; }
   .office-eyes { transition: none; }
 }
 `
@@ -4123,6 +4195,13 @@ const plugin = {
         .then(value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             $lastTask.set(value)
+          }
+        })
+        .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('month'))
+        .then(value => {
+          if (value && typeof value === 'object' && typeof value.start === 'number') {
+            $month.set(value)
           }
         })
         .catch(() => undefined)

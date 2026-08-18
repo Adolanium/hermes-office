@@ -38,6 +38,7 @@ Cute bits on the floor:
 - The header names who is thinking (Scout thinking, Scout, Arke +2 thinking). Click it to scroll to that desk.
 - Steady labels like here, at desk, exploring fade out after a moment so a busy floor stays calm. Hover a bot to see them again. Thinking, bored, zzz, games and results stay.
 - On the hour, idle bots at their desks look up and take a short break. If you missed it, click the clock within ten minutes of the hour and they do it again.
+- Employee of the month. A gold framed portrait on the wall of the bot with the most finished tasks this month, with a brass plate and their name. Ties keep the current holder, you have to pass them. Resets on the first.
 - The header shows a weekly recap once anything has happened: tasks done, who ate the most pizza, hops taken. Resets on Monday.
 - Keyboard: with a bot picked, arrows nudge it around the floor (Shift for bigger steps), Enter opens its chat, P pets it.
 - The room is a centred diorama with a fixed play height. With one to three bots the desks sit in the middle. It scrolls only when there are more desks than fit.

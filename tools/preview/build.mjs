@@ -54,7 +54,7 @@ ${css}
   </header>
   <div class="office-stage-wrap"><div class="office-room is-carpet" id="room">
     <div class="office-wall" aria-hidden="true"></div>
-    <div class="office-plant is-lean" aria-hidden="true"></div><div id="amb"></div>
+    <div class="office-plant is-lean" aria-hidden="true"></div><div id="amb"></div><div class="office-eom" title="Employee of the month"><div class="office-eom-frame"><svg viewBox="0 0 40 44" width="30" height="30" class="office-face"><rect x="3" y="3" width="34" height="34" rx="11" fill="#f0a040"/><ellipse cx="15" cy="17" rx="2.4" ry="2.4" fill="rgba(0,0,0,.82)"/><ellipse cx="25" cy="17" rx="2.4" ry="2.4" fill="rgba(0,0,0,.82)"/></svg></div><div class="office-eom-plate">employee of the month</div><div class="office-eom-name">Arke</div></div>
     <div class="office-hint is-task" role="note"><div class="office-hint-copy"><b>Give Hermes something small.</b> Type it in the bar below and press Send. Watch the desk.</div><button type="button" class="office-hint-close">×</button></div>
     <div class="office-hint" role="note" style="display:none"><div class="office-hint-copy"><b>Try petting Hermes.</b> Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.</div><button type="button" class="office-hint-close">×</button></div><div class="office-tally office-chip">12 done</div>
     <button type="button" class="office-clock is-digital"><div class="office-clock-lcd">06:56</div></button>

@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine, completionToken, headerLine, quietStatus };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine, completionToken, headerLine, quietStatus, monthStart, monthBump, monthLeader };`,
     context
   )
 
@@ -430,6 +430,29 @@ test('header names and quiet labels', () => {
   assert.equal(quietStatus('thinking'), false)
   assert.equal(quietStatus('bored'), false)
   assert.equal(quietStatus('pizza!'), false)
+})
+
+test('employee of the month: most tasks wins, ties keep the holder, new month resets', () => {
+  const { monthStart, monthBump, monthLeader } = loadHelpers()
+  const aug = new Date(2026, 7, 18, 12).getTime()
+  const sep = new Date(2026, 8, 2, 9).getTime()
+
+  assert.equal(new Date(monthStart(new Date(aug))).getDate(), 1)
+  assert.equal(new Date(monthStart(new Date(aug))).getMonth(), 7)
+
+  let m = monthBump(null, 'scout', aug)
+  assert.equal(m.holder, 'scout')
+  m = monthBump(m, 'arke', aug)
+  assert.equal(m.holder, 'scout', 'a tie does not steal the frame')
+  m = monthBump(m, 'arke', aug)
+  assert.equal(m.holder, 'arke', 'passing the holder does')
+  assert.equal(m.tasks.scout, 1)
+  assert.equal(m.tasks.arke, 2)
+  assert.equal(monthLeader({ tasks: {} }, 'x'), null)
+
+  const fresh = monthBump(m, 'scout', sep)
+  assert.equal(fresh.holder, 'scout', 'september starts from zero')
+  assert.deepEqual(Object.keys(fresh.tasks), ['scout'])
 })
 
 test('advanceWalk follows a hopscotch path then arrives', () => {
