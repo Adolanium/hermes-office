@@ -117,6 +117,34 @@ function bumpMonth(name) {
   savePref('month', next)
 }
 
+// No board for this month yet (first run of the feature, or a fresh install
+// with stars on the profiles): start it from the all time stars so the wall is
+// not empty. From then on it counts real completions and resets on the first.
+function seedMonth(roster) {
+  const cur = $month.get()
+  const start = monthStart(new Date())
+  if (cur) {
+    return
+  }
+
+  const stars = $trophies.get()
+  const tasks = {}
+  for (const bot of roster || []) {
+    if (stars[bot.name] > 0) {
+      tasks[bot.name] = stars[bot.name]
+    }
+  }
+
+  const holder = monthLeader({ tasks }, null)
+  if (!holder) {
+    return
+  }
+
+  const next = { start, tasks, holder, seeded: true }
+  $month.set(next)
+  savePref('month', next)
+}
+
 // Weekly recap: a few counters that reset every Monday.
 function bumpWeek(key, name) {
   const now = Date.now()
@@ -3625,7 +3653,8 @@ function OfficeFloor() {
 
   useEffect(() => {
     seedTrophies(roster)
-  }, [roster])
+    seedMonth(roster)
+  }, [roster, trophies])
 
   useEffect(() => {
     const due = ritualDue($ritual.get(), new Date(now))
