@@ -20,7 +20,18 @@ const css = ctx.__css
 const fnSlice = (a, b) => source.slice(source.indexOf(a), source.indexOf(b))
 const HOPFN = fnSlice('function easeInOut', 'function roamMs') + fnSlice('function walkHop', 'function roamBox') + fnSlice('function hopCourse', 'function chairCountForGame')
 
-const face = (color, mood = 'idle') => `<svg viewBox="0 0 40 44" width="42" height="42" class="office-face office-face-${mood}"><rect x="3" y="3" width="34" height="34" rx="11" fill="${color}"/><ellipse cx="15" cy="17" rx="2.4" ry="2.4" fill="rgba(0,0,0,.82)"/><ellipse cx="25" cy="17" rx="2.4" ry="2.4" fill="rgba(0,0,0,.82)"/></svg>`
+// Mirrors WorkerFace in plugin.js: gaze wrapper, blink group, per-eye groups
+// with a parked lid. `sad` slants the lids down over the eyes.
+let faceSeq = 0
+const face = (color, mood = 'idle', sad = false) => {
+  const h = (faceSeq++ * 7919) % 100003
+  const ry = 2.4
+  const eyeY = sad ? 18 : 17
+  const lidY = sad ? eyeY - ry * 1.3 : eyeY - ry * 2.6
+  const eye = (side, cx) =>
+    `<g class="office-eye office-eye-${side}"><ellipse class="office-pupil" cx="${cx}" cy="${eyeY}" rx="2.4" ry="${ry}" fill="rgba(0,0,0,.82)"/><ellipse class="office-lid" cx="${cx}" cy="${lidY}" rx="3.3" ry="2.8" fill="${color}" opacity="${sad ? 1 : 0}" transform="rotate(${side === 'l' ? -18 : 18} ${cx} ${eyeY})"/></g>`
+  return `<svg viewBox="0 0 40 44" width="42" height="42" class="office-face office-face-${mood}${sad ? ' is-sad' : ''}"><rect x="3" y="3" width="34" height="34" rx="11" fill="${color}"/><g class="office-eyes"><g class="office-gaze" style="animation-duration:${(8 + (h % 41) / 10).toFixed(1)}s;animation-delay:-${h % 7900}ms"><g class="office-blink${h % 4 === 0 ? ' is-double' : ''}" style="animation-duration:${(3.2 + (h % 27) / 10).toFixed(1)}s;animation-delay:-${h % 2900}ms">${eye('l', 15)}${eye('r', 25)}</g></g></g>${mood === 'think' ? '<g><circle cx="16" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-0"/><circle cx="20" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-1"/><circle cx="24" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-2"/></g>' : ''}</svg>`
+}
 
 const desk = ({ name, color, think, away, say, night }) => `
 <div class="office-desk ${think ? 'is-think' : ''} ${away ? 'has-wander' : ''}" data-desk="${name}">
@@ -79,7 +90,7 @@ ${css}
     <div class="office-game-layer"><span class="office-note" style="left:440px;top:250px;--d:0s">\u266b</span><span class="office-note" style="left:470px;top:236px;--d:.45s">\u266a</span><span class="office-note" style="left:455px;top:222px;--d:.9s">\u266b</span><svg viewBox="0 0 30 36" width="30" height="36" class="office-game-chair" style="left:430px;top:300px"><rect x="6" y="1" width="18" height="14" rx="3" fill="#a26b3f"/><rect x="8" y="5" width="14" height="2" rx="1" fill="rgba(0,0,0,.18)"/><rect x="8" y="9" width="14" height="2" rx="1" fill="rgba(0,0,0,.18)"/><rect x="3" y="15" width="24" height="7" rx="2" fill="#b87b4a"/><rect x="3" y="15" width="24" height="2" rx="1" fill="rgba(255,255,255,.28)"/><rect x="5" y="22" width="3" height="13" rx="1" fill="#6b4425"/><rect x="22" y="22" width="3" height="13" rx="1" fill="#6b4425"/><rect x="8" y="27" width="14" height="2" rx="1" fill="#6b4425"/></svg><svg viewBox="0 0 30 36" width="30" height="36" class="office-game-chair" style="left:474px;top:300px"><rect x="6" y="1" width="18" height="14" rx="3" fill="#a26b3f"/><rect x="8" y="5" width="14" height="2" rx="1" fill="rgba(0,0,0,.18)"/><rect x="8" y="9" width="14" height="2" rx="1" fill="rgba(0,0,0,.18)"/><rect x="3" y="15" width="24" height="7" rx="2" fill="#b87b4a"/><rect x="3" y="15" width="24" height="2" rx="1" fill="rgba(255,255,255,.28)"/><rect x="5" y="22" width="3" height="13" rx="1" fill="#6b4425"/><rect x="22" y="22" width="3" height="13" rx="1" fill="#6b4425"/><rect x="8" y="27" width="14" height="2" rx="1" fill="#6b4425"/></svg></div>
     <div class="office-wander-layer">
       <div class="office-person is-wander is-idle" id="w1" style="left:calc(100% - 118px); top:200px; --lift:0"><span class="office-ground"></span>${face('#f0a040')}<span class="office-status">at the bar</span></div>
-      <div class="office-person is-wander is-idle" id="w2" style="left:calc(100% - 70px); top:210px; --lift:.8"><span class="office-ground"></span>${face('#3ac0a0')}<span class="office-status">exploring</span></div>
+      <div class="office-person is-wander is-idle" id="w2" style="left:calc(100% - 70px); top:210px; --lift:.8"><span class="office-ground"></span>${face('#3ac0a0', 'idle', true)}<span class="office-status is-sad">no pizza</span></div>
     </div>
   </div>
   </div>

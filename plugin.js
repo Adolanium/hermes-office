@@ -2117,14 +2117,17 @@ function tickGame(now, roomEl, jobs) {
   }
 }
 
-function WorkerFace({ color, image, mood, size = 36, name }) {
+function WorkerFace({ color, image, mood, size = 36, name, sad = false }) {
   const shy = mood === 'shy' || mood === 'held'
   const sleep = mood === 'sleep'
   const peek = mood === 'peek'
   const bored = mood === 'bored'
-  const eyeY = peek ? 11 : shy ? 15 : bored ? 19 : 17
+  const eyeY = peek ? 11 : shy ? 15 : bored ? 19 : sad ? 18 : 17
   const eyeL = shy ? 13.5 : 15
   const eyeR = shy ? 26.5 : 25
+  const rx = shy ? 3.1 : 2.4
+  const ry = shy ? 3.4 : peek ? 3 : bored ? 1.2 : 2.4
+  const hash = nameHash(name)
 
   if (image) {
     return jsx('img', {
@@ -2145,13 +2148,34 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
   }
 
   const ink = 'rgba(0,0,0,0.82)'
+  // Sad brows: body colored lids that sit over the top of each eye at a
+  // slant. Parked above the eye (and see-through) the rest of the time so
+  // the mood can slide in instead of popping.
+  const lidY = sad ? eyeY - ry * 1.3 : eyeY - ry * 2.6
+  const eye = (side, cx) =>
+    jsxs('g', {
+      className: cn('office-eye', side === 'l' ? 'office-eye-l' : 'office-eye-r'),
+      children: [
+        jsx('ellipse', { className: 'office-pupil', cx, cy: eyeY, rx, ry, fill: ink }),
+        jsx('ellipse', {
+          className: 'office-lid',
+          cx,
+          cy: lidY,
+          rx: rx + 0.9,
+          ry: ry + 0.4,
+          fill: color,
+          opacity: sad ? 1 : 0,
+          transform: `rotate(${side === 'l' ? -18 : 18} ${cx} ${eyeY})`
+        })
+      ]
+    })
 
   return jsxs('svg', {
     viewBox: '0 0 40 44',
     width: size,
     height: size,
     'aria-hidden': true,
-    className: cn('office-face', `office-face-${mood}`),
+    className: cn('office-face', `office-face-${mood}`, sad && 'is-sad'),
     children: [
       jsx('rect', { x: 3, y: 3, width: 34, height: 34, rx: 11, fill: color }),
       sleep || mood === 'pet' || mood === 'clap'
@@ -2165,16 +2189,23 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
         : jsxs('g', {
             className: 'office-eyes',
             children: [
-              jsxs('g', {
-                className: 'office-blink',
+              // office-gaze: slow wander plus a glance aside now and then, on
+              // each bot's own clock. office-blink: the lid squash, also on
+              // its own clock, and a quarter of the bots double blink.
+              jsx('g', {
+                className: 'office-gaze',
                 style: {
-                  animationDuration: `${(3.2 + (nameHash(name) % 27) / 10).toFixed(1)}s`,
-                  animationDelay: `-${nameHash(name) % 2900}ms`
+                  animationDuration: `${(8 + (hash % 41) / 10).toFixed(1)}s`,
+                  animationDelay: `-${hash % 7900}ms`
                 },
-                children: [
-                  jsx('ellipse', { cx: eyeL, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : bored ? 1.2 : 2.4, fill: ink }),
-                  jsx('ellipse', { cx: eyeR, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : bored ? 1.2 : 2.4, fill: ink })
-                ]
+                children: jsxs('g', {
+                  className: cn('office-blink', hash % 4 === 0 && 'is-double'),
+                  style: {
+                    animationDuration: `${(3.2 + (hash % 27) / 10).toFixed(1)}s`,
+                    animationDelay: `-${hash % 2900}ms`
+                  },
+                  children: [eye('l', eyeL), eye('r', eyeR)]
+                })
               }),
               shy
                 ? jsx('ellipse', { cx: 31, cy: 9, rx: 1.6, ry: 2.4, fill: 'rgba(120,190,255,0.95)' })
@@ -2343,7 +2374,7 @@ function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five,
         : null,
       wander ? jsx('span', { className: 'office-ground', 'aria-hidden': true }) : null,
       pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
-      jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name }),
+      jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name, sad: Boolean(noPizza || leftover) && (face === 'idle' || face === 'stretch') }),
       jsx('span', {
         className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle', noPizza && 'is-sad', quietStatus(status) && 'is-quiet'),
         children: status
@@ -4106,7 +4137,14 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-person.is-wander .office-hearts { left:50%; transform:translateX(-50%); }
 .office-person.is-closer { transform: scale(1.12) translateY(4px); }
 .office-eyes { transform: translate(calc(var(--edx, 0px) + var(--wdx, 0px)), var(--edy, 0px)); transition: transform .12s ease-out; }
-.office-blink { transform-box: fill-box; transform-origin: center; animation: office-blink 4s linear infinite; }
+.office-gaze { animation: office-gaze 10s ease-in-out infinite; }
+.office-blink { transform-box: fill-box; transform-origin: center; animation: office-blink 4s ease-in-out infinite; }
+.office-blink.is-double { animation-name: office-blink-double; }
+.office-eye { transform-box: fill-box; transform-origin: center; }
+.office-pupil, .office-lid { transition: cx .3s ease, cy .3s ease, rx .3s ease, ry .3s ease, opacity .3s ease; }
+.office-face-think .office-eyes { animation: office-eyes-turn 0.9s ease-in-out infinite; }
+.office-face-think .office-eye-l { animation: office-eye-far 0.9s ease-in-out infinite; }
+.office-face-think .office-eye-r { animation: office-eye-near 0.9s ease-in-out infinite; }
 .office-stage .office-person { animation: office-breathe 3.4s ease-in-out infinite; }
 .office-stage .office-person.is-sleep { animation-duration: 5.6s; }
 .office-stage .office-person.is-closer, .office-stage .office-person.is-held { animation: none; }
@@ -4177,17 +4215,23 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-quiet { to { opacity:0; } }
 @keyframes office-hint { 0% { transform: translateY(8px) scale(.96); opacity:0; } 100% { transform: none; opacity:1; } }
 @keyframes office-doodle { 0% { stroke-dashoffset:60; } 50% { stroke-dashoffset:0; } 100% { stroke-dashoffset:0; } }
-@keyframes office-blink { 0%, 94%, 100% { transform: scaleY(1); } 96%, 98% { transform: scaleY(.08); } }
+@keyframes office-blink { 0%, 93%, 100% { transform: scaleY(1); } 95.5%, 96.5% { transform: scaleY(.08); } }
+@keyframes office-blink-double { 0%, 88%, 92.5%, 100% { transform: scaleY(1); } 89.5%, 90.5% { transform: scaleY(.08); } 94%, 95% { transform: scaleY(.08); } 96.5% { transform: scaleY(1); } }
+@keyframes office-gaze { 0%, 100% { transform: translate(0, 0); } 18% { transform: translate(.5px, -.2px); } 34% { transform: translate(-.4px, .2px); } 46% { transform: translate(-.4px, .2px); } 50% { transform: translate(2.2px, -.4px); } 58% { transform: translate(2.2px, -.4px); } 63% { transform: translate(0, 0); } 82% { transform: translate(-.6px, .3px); } }
+@keyframes office-eyes-turn { 0%, 100% { transform: translate(calc(var(--edx, 0px) + var(--wdx, 0px) - 1.6px), var(--edy, 0px)); } 50% { transform: translate(calc(var(--edx, 0px) + var(--wdx, 0px) + 1.6px), calc(var(--edy, 0px) - .6px)); } }
+@keyframes office-eye-far { 0%, 100% { transform: scaleX(.78); } 50% { transform: scaleX(1); } }
+@keyframes office-eye-near { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(.78); } }
 @keyframes office-breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1.2px); } }
 @keyframes office-drop { 0% { transform: scale(1.22, .78); } 40% { transform: scale(.92, 1.08); } 70% { transform: scale(1.04, .97); } 100% { transform: scale(1, 1); } }
 @keyframes office-puff { 0% { transform: scale(.4); opacity:.9; } 100% { transform: scale(1.5); opacity:0; } }
 @keyframes office-puff-dot { 0% { transform: translate(0, 0); opacity:1; } 100% { transform: translate(var(--dx), -10px); opacity:0; } }
 @keyframes office-boot { 0% { filter: brightness(3) contrast(1.4); } 30% { filter: brightness(.6); } 60% { filter: brightness(2); } 100% { filter: brightness(1); } }
 @media (prefers-reduced-motion: reduce) {
-  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news { animation: none !important; }
+  .office-stage .office-person, .office-blink, .office-gaze, .office-face-think .office-eyes, .office-face-think .office-eye-l, .office-face-think .office-eye-r, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news { animation: none !important; }
   .office-status.is-quiet { animation: none; opacity:.35; }
   .office-eom { animation: none; }
   .office-eyes { transition: none; }
+  .office-pupil, .office-lid { transition: none; }
 }
 `
   let style = document.getElementById('hermes-office-css')

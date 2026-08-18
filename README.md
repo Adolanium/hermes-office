@@ -21,7 +21,7 @@ Give them a task from the bar at the bottom. It goes into the same forever **Bot
 Cute bits on the floor:
 
 - First open shows one hint that points at the task bar: give someone something small. When the first result comes back a second hint shows up: pet them, try a game. Close either, or just do the thing, and they never come back. Faces and hop squares have tooltips too.
-- They blink, breathe, and their eyes follow your mouse when it comes close. Hover a face and they flinch. Tap to pet. Hold still and they fall asleep in your hand.
+- They blink, breathe, and their eyes follow your mouse when it comes close. Each bot blinks on its own clock (some double blink), idle eyes drift and glance to the side now and then, and mood changes slide in instead of popping. Thinking bots turn their eyes with the rock of their head. Losing musical chairs or missing the pizza gets a sad face. Hover a face and they flinch. Tap to pet. Hold still and they fall asleep in your hand.
 - Drag them around. They land with a squash and a puff of dust, then keep wandering. Drop two close together and they whisper. Two bots crossing paths say hi.
 - **Back to desk** is the only thing that sends them home. Every desk has an office chair. It wobbles while they are away.
 - Click the carpet and everyone peeks.

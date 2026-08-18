@@ -468,3 +468,40 @@ test('advanceWalk follows a hopscotch path then arrives', () => {
   assert.ok(walkHop(0.5, 'hopscotch') > walkHop(0.5, 'roam'))
   assert.equal(walkHop(1, 'hopscotch'), 0)
 })
+
+test('face: eyes have their own gaze and blink clocks, per-eye groups, and parked lids', () => {
+  const faceStart = source.indexOf('function WorkerFace(')
+  const faceEnd = source.indexOf('function statusText(')
+  assert.ok(faceStart > 0 && faceEnd > faceStart)
+  const face = source.slice(faceStart, faceEnd)
+
+  // Gaze wrapper and blink group each get a per-bot duration and delay.
+  assert.match(face, /className: 'office-gaze',\s*style: \{\s*animationDuration/)
+  assert.match(face, /className: cn\('office-blink', hash % 4 === 0 && 'is-double'\)/)
+  // Per-eye groups so a head turn can narrow one eye, plus a lid per eye.
+  assert.match(face, /office-eye-l/)
+  assert.match(face, /office-eye-r/)
+  assert.match(face, /className: 'office-lid'/)
+  // Sad lids are drawn only when asked for, and slant up toward the middle.
+  assert.match(face, /opacity: sad \? 1 : 0/)
+  assert.match(face, /rotate\(\$\{side === 'l' \? -18 : 18\}/)
+})
+
+test('face css: idle gaze, double blink, think turn, geometry morph, reduced motion', () => {
+  assert.match(source, /@keyframes office-gaze /)
+  assert.match(source, /@keyframes office-blink-double /)
+  assert.match(source, /\.office-blink\.is-double \{ animation-name: office-blink-double; \}/)
+  assert.match(source, /\.office-face-think \.office-eyes \{ animation: office-eyes-turn/)
+  assert.match(source, /\.office-face-think \.office-eye-l \{ animation: office-eye-far/)
+  assert.match(source, /\.office-face-think \.office-eye-r \{ animation: office-eye-near/)
+  assert.match(source, /\.office-pupil, \.office-lid \{ transition: cx \.3s ease, cy \.3s ease, rx \.3s ease, ry \.3s ease/)
+  // Reduced motion turns the new animations off too.
+  const rm = source.slice(source.indexOf('@media (prefers-reduced-motion: reduce)'))
+  assert.match(rm, /\.office-gaze/)
+  assert.match(rm, /\.office-face-think \.office-eye-l/)
+  assert.match(rm, /\.office-pupil, \.office-lid \{ transition: none; \}/)
+})
+
+test('person: sad face when left out of chairs or pizza, only while idle', () => {
+  assert.match(source, /sad: Boolean\(noPizza \|\| leftover\) && \(face === 'idle' \|\| face === 'stretch'\)/)
+})
