@@ -3191,7 +3191,18 @@ function EmployeeOfMonth({ roster }) {
   }, holder)
 }
 
-function Ambience({ backdrop, tally, sky, roster }) {
+// "3 tasks done overall" plus who did what, for the tally board tooltip.
+function tallyTitle(tally, trophies, roster) {
+  const head = `${tally} task${tally === 1 ? '' : 's'} done overall`
+  const rows = (roster || [])
+    .map(bot => [botLook(bot).title, (trophies || {})[bot.name] || 0])
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([title, n]) => `${title}: ${n}`)
+  return rows.length ? `${head}\n${rows.join('\n')}` : head
+}
+
+function Ambience({ backdrop, tally, sky, roster, trophies }) {
   const bits = []
 
   bits.push(jsx(EmployeeOfMonth, { roster: roster || [] }, 'eom'))
@@ -3205,7 +3216,7 @@ function Ambience({ backdrop, tally, sky, roster }) {
   }
 
   if (tally > 0) {
-    bits.push(jsx('div', { className: 'office-tally office-chip', title: 'Tasks finished in this office', children: `${tally} done` }, 'tally'))
+    bits.push(jsx('div', { className: 'office-tally office-chip', title: tallyTitle(tally, trophies, roster), children: `${tally} done` }, 'tally'))
   }
 
   if (backdrop === 'garden') {
@@ -3811,7 +3822,7 @@ function OfficeFloor() {
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
-          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky, roster }),
+          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky, roster, trophies }),
           hint === 'task' || hint === 'play' ? jsx(HintBubble, { roster, stage: hint, onClose: dismissHint }) : null,
           jsx(OfficeProps, {
             now,
