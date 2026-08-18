@@ -47,7 +47,11 @@ const $planes = atom([])
 const $trophies = atom({})
 const $lastTask = atom({})
 const $week = atom(null)
-const $hint = atom(false)
+const $hint = atom('off')
+const $news = atom({})
+const $ritual = atom({ hour: -1, at: 0 })
+const RITUAL_MS = 2800
+const RITUAL_WINDOW_MS = 10 * 60 * 1000
 const $petPing = atom({})
 const OFFICE_NS = 'hermes-office'
 const BORED_MS = 2 * 24 * 60 * 60 * 1000
@@ -114,11 +118,38 @@ function bumpWeek(key, name) {
 }
 
 // Job done: confetti at the desk, a trophy, then off to the bar.
+// Two paths can see the same completion (the job poller and the focused
+// busy edge). Each round gets a token in startRound; a round celebrates once.
 function celebrate(name) {
   const now = Date.now()
-  patchFx(name, { clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
+  const row = $fx.get()[name] || {}
+  const round = completionToken(row)
+  if (round === null) {
+    return
+  }
+
+  patchFx(name, { doneRound: round, clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
   addTrophy(name)
   bumpWeek('tasks', name)
+  leaveNote(name, now)
+  advanceHint('play')
+}
+
+// A finished task leaves a note on the desk until the chat is opened.
+function leaveNote(name, at) {
+  const next = { ...$news.get(), [name]: at || Date.now() }
+  $news.set(next)
+  savePref('news', next)
+}
+
+function readNote(name) {
+  if (!$news.get()[name]) {
+    return
+  }
+  const next = { ...$news.get() }
+  delete next[name]
+  $news.set(next)
+  savePref('news', next)
 }
 
 // A little dust ring at a foot position. Gone after half a second.
@@ -570,6 +601,28 @@ function skyState(date = new Date()) {
   const dusk = !night && h >= 17.5
   const dawn = !night && h < 8.5
   return { night, t: Math.max(0, Math.min(1, t)), tone: night ? 'night' : dusk ? 'dusk' : dawn ? 'dawn' : 'day' }
+}
+
+function headerLine(names, one, many) {
+  const list = (names || []).filter(Boolean)
+  if (!list.length) {
+    return ''
+  }
+  const shown = list.slice(0, 2).join(', ')
+  const more = list.length > 2 ? ` +${list.length - 2}` : ''
+  return `${shown}${more} ${list.length === 1 ? one : many}`
+}
+
+// Steady state labels fade after a moment so a full floor stays calm.
+function quietStatus(text) {
+  return text === 'here' || text === 'at desk' || text === 'exploring'
+}
+
+// Which round a completion belongs to, or null if that round already
+// celebrated. Rounds without a token (old state) count as round 0.
+function completionToken(row) {
+  const round = row?.round || 0
+  return row?.doneRound === round ? null : round
 }
 
 // A bot that has had no task for days, and is idle at its desk, is bored.
@@ -1147,6 +1200,7 @@ function readFx(name, now) {
     drop: (row.dropUntil || 0) > now,
     boot: (row.bootUntil || 0) > now,
     hi: (row.hiUntil || 0) > now,
+    ritual: (row.ritualUntil || 0) > now,
     ask: (row.askUntil || 0) > now,
     bang: (row.bangUntil || 0) > now,
     petted: (row.petUntil || 0) > now,
@@ -1334,21 +1388,11 @@ function watchJob(name, chat) {
 
 async function openBot(bot) {
   tap()
+  readNote(bot.name)
 
   try {
     const chat = await ensureBotChat(bot)
     const id = chat?.stored
-
-    if (chat?.created && chat.runtime) {
-      try {
-        await host.request('prompt.submit', {
-          session_id: chat.runtime,
-          text: 'Hey, tell me about yourself!'
-        })
-      } catch {
-        /* kickoff is best-effort */
-      }
-    }
 
     if (id && typeof host.openSession === 'function') {
       await host.openSession(id, { profile: bot.name })
@@ -1646,11 +1690,12 @@ function startHopscotch(name, roomEl) {
 // Someone got a task: they walk home, and a fresh pizza lands on the counter.
 function startRound(name) {
   const now = Date.now()
-  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700, askUntil: now + 1400 })
+  patchFx(name, { round: now, nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700, askUntil: now + 1400 })
   const last = { ...$lastTask.get(), [name]: now }
   $lastTask.set(last)
   savePref('lastTask', last)
-  dismissHint()
+  readNote(name)
+  advanceHint('wait')
   $pizza.set(freshPizza(Date.now()))
 }
 
@@ -1772,6 +1817,37 @@ function tickNight(now, night, roster, jobs, activeProfile, turnBusy) {
       patchFx(name, { yawnUntil: now + 1500 })
     }
   }
+}
+
+// On the hour, idle bots at their desks look up and stretch. Once per hour on
+// its own, and again on request (clicking the clock within ten minutes of the
+// hour) so nobody has to be watching at exactly the right second.
+function ritualDue(state, date) {
+  const hour = date.getHours()
+  return date.getMinutes() === 0 && state.hour !== hour ? hour : -1
+}
+
+function ritualReplayable(state, now) {
+  return new Date(now).getMinutes() < 10 || (state.at > 0 && now - state.at < RITUAL_WINDOW_MS)
+}
+
+function runRitual(roster, jobs, activeProfile, turnBusy, hour) {
+  const now = Date.now()
+  const seats = $seats.get()
+  let i = 0
+
+  for (const bot of roster || []) {
+    const busy = deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs?.[bot.name]) }) === 'think'
+    if (busy || seats[bot.name] || $drag.get()?.name === bot.name) {
+      continue
+    }
+
+    const wait = 120 * i++
+    patchFx(bot.name, { ritualUntil: now + wait + RITUAL_MS, stretchUntil: now + wait + 900 })
+  }
+
+  $ritual.set({ hour: typeof hour === 'number' ? hour : $ritual.get().hour, at: now })
+  savePref('ritualHour', $ritual.get().hour)
 }
 
 function tickWalks(now) {
@@ -2054,7 +2130,7 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
   }, name)
 }
 
-function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn }) {
+function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual }) {
   if (face === 'sleep') {
     return 'zzz'
   }
@@ -2081,6 +2157,10 @@ function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza
 
   if (yawn && face !== 'sleep') {
     return 'yawn'
+  }
+
+  if (ritual && face !== 'sleep' && face !== 'think') {
+    return 'break'
   }
 
   if (cheers) {
@@ -2167,9 +2247,10 @@ function PizzaSlice({ className }) {
   })
 }
 
-function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, style, onPetStart }) {
+function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, ritual, style, onPetStart }) {
+  const status = statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual })
   return jsxs('div', {
-    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop'),
+    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop', ritual && 'is-lookup'),
     style,
     role: 'button',
     tabIndex: 0,
@@ -2197,8 +2278,8 @@ function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five,
       pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
       jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name }),
       jsx('span', {
-        className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle', noPizza && 'is-sad'),
-        children: statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn })
+        className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle', noPizza && 'is-sad', quietStatus(status) && 'is-quiet'),
+        children: status
       })
     ]
   })
@@ -2316,6 +2397,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   const held = drag?.name === bot.name
   const { shy, pet, handlers } = usePersonHandlers(bot, roomRef, held)
   const lastTask = useValue($lastTask)
+  const note = Boolean(useValue($news)[bot.name]) && !think
   const bored = !seat && !think && isBored(lastTask[bot.name], now)
   const face = faceMood({
     held,
@@ -2358,6 +2440,21 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
         className: 'office-stage',
         children: [
           jsx('div', { className: 'office-desk-top' }),
+          note
+            ? jsx('button', {
+                type: 'button',
+                className: 'office-memo',
+                title: `${look.title} has news. Open the chat.`,
+                onClick: event => {
+                  event.stopPropagation()
+                  void onOpen()
+                },
+                children: jsxs('svg', { viewBox: '0 0 22 18', width: 22, height: 18, 'aria-hidden': true, children: [
+                  jsx('path', { d: 'M1 3 L11 10 L21 3 V16 H1 Z', fill: '#fff8e6', stroke: '#8a7a5a', strokeWidth: 1 }),
+                  jsx('path', { d: 'M1 3 H21 L11 10 Z', fill: '#f4e9c8', stroke: '#8a7a5a', strokeWidth: 1 })
+                ] })
+              })
+            : null,
           night
             ? jsxs('div', {
                 className: 'office-lamp',
@@ -2394,6 +2491,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                     ask: fx.ask,
                     bang: fx.bang,
                     yawn: fx.yawn,
+                    ritual: fx.ritual,
                     style: watchDx ? { '--wdx': watchDx } : undefined,
                     onPetStart: { ...handlers, isActive }
                   })
@@ -2566,12 +2664,13 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
 }
 
 function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
-  const now = usePulse(16)
   const seats = useValue($seats)
   const drag = useValue($drag)
   const walks = useValue($walks)
   const roam = useValue($roam)
   const game = useValue($game)
+  const moving = Boolean(drag) || Object.keys(walks).length > 0 || Object.keys(roam).length > 0 || Boolean(game)
+  const now = usePulse(moving ? 16 : 240)
   const names = new Set([...Object.keys(seats), drag?.name, ...Object.keys(walks)].filter(Boolean))
 
   useEffect(() => {
@@ -3071,30 +3170,66 @@ function Ambience({ backdrop, tally, sky }) {
 
 // First run only. One bubble that says what the toy does. Closing it, or
 // doing any of the things it mentions, puts it away for good.
-function HintBubble({ roster, onClose }) {
+// Onboarding in two moments. First: give someone a task (points at the task
+// bar). After the first result comes back: pet them, and try one game.
+function HintBubble({ roster, stage, onClose }) {
   const first = roster[0] ? botLook(roster[0]).title : 'a bot'
+  const copy = stage === 'task'
+    ? [jsx('b', { children: `Give ${first} something small.` }, 'b'), ' Type it in the bar below and press Send. Watch the desk.']
+    : [jsx('b', { children: `${first} is back. Try petting them.` }, 'b'), ' Hover to startle, tap to pet, hold to send to sleep, drag to move. Then tap a hop square or press chairs.']
+
   return jsxs('div', {
-    className: 'office-hint',
+    className: cn('office-hint', stage === 'task' && 'is-task'),
     role: 'note',
     children: [
-      jsxs('div', { className: 'office-hint-copy', children: [
-        jsx('b', { children: `Try petting ${first}.` }),
-        ' Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.'
-      ] }),
+      jsx('div', { className: 'office-hint-copy', children: copy }),
       jsx('button', { type: 'button', className: 'office-hint-close', 'aria-label': 'Dismiss', onClick: onClose, children: '\u00d7' })
     ]
   })
 }
 
-function dismissHint() {
-  if (!$hint.get()) {
-    return
-  }
-  $hint.set(false)
-  savePref('hintSeen', true)
+// Stages: 'task' (show the first bubble), 'wait' (task sent, hold), 'play'
+// (show the second bubble), 'done'. 'off' means storage has not answered yet.
+function setHint(stage) {
+  $hint.set(stage)
+  savePref('hintStage', stage)
 }
 
-function OfficeProps({ now, roomRef }) {
+function advanceHint(next) {
+  const cur = $hint.get()
+  if (cur === 'off' || cur === 'done') {
+    return
+  }
+  if (next === 'wait' && cur === 'task') {
+    setHint('wait')
+  } else if (next === 'play' && (cur === 'wait' || cur === 'task')) {
+    setHint('play')
+  }
+}
+
+// Doing any of the things the bubble teaches puts it away.
+function dismissHint() {
+  const cur = $hint.get()
+  if (cur === 'off' || cur === 'done') {
+    return
+  }
+  setHint('done')
+}
+
+// "Scout thinking", "Scout, Arke thinking", "Scout, Arke +2 thinking".
+function headerNames(names, one, many) {
+  return headerLine(names, one, many)
+}
+
+function scrollToDesk(roomEl, name) {
+  const desk = roomEl?.querySelector?.(`[data-desk=${JSON.stringify(name)}]`)
+  if (desk?.scrollIntoView) {
+    desk.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center', inline: 'nearest' })
+  }
+  pickBot(name)
+}
+
+function OfficeProps({ now, roomRef, onReplay }) {
   const clockKind = useValue($clockKind)
   const clockPos = useValue($clockPos)
   const dragged = useRef(false)
@@ -3148,6 +3283,7 @@ function OfficeProps({ now, roomRef }) {
     const next = nextClockKind($clockKind.get())
     $clockKind.set(next)
     savePref('clock', next)
+    onReplay?.()
   }
 
   return jsxs(Fragment, {
@@ -3391,6 +3527,12 @@ function OfficeFloor() {
     bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs[bot.name]) }) === 'think'
   )
   const idleCount = idleBotNames(roster, jobs, activeProfile, turnBusy).length
+  const news = useValue($news)
+  const newsNames = roster.map(bot => bot.name).filter(name => news[name])
+  const nameOf = name => {
+    const bot = roster.find(row => row.name === name)
+    return bot ? botLook(bot).title : name
+  }
 
   useEffect(() => {
     pullAvatars(roster)
@@ -3419,6 +3561,13 @@ function OfficeFloor() {
   useEffect(() => {
     seedTrophies(roster)
   }, [roster])
+
+  useEffect(() => {
+    const due = ritualDue($ritual.get(), new Date(now))
+    if (due >= 0 && roster.length) {
+      runRitual(roster, jobs, activeProfile, turnBusy, due)
+    }
+  }, [now, roster, jobs, activeProfile, turnBusy])
 
   // Keyboard: arrows nudge the picked bot, Enter opens its chat, P pets it.
   // Ignored while typing in a field.
@@ -3532,11 +3681,29 @@ function OfficeFloor() {
               weekLine(week)
                 ? jsx('div', { className: 'office-recap', title: weekLine(week), children: weekLine(week) })
                 : null,
-              jsxs('div', {
-                className: 'office-count',
+              newsNames.length
+                ? jsx('button', {
+                    type: 'button',
+                    className: 'office-news',
+                    title: 'Open the chat',
+                    onClick: () => {
+                      scrollToDesk(roomRef.current, newsNames[0])
+                      const bot = roster.find(row => row.name === newsNames[0])
+                      if (bot) {
+                        void openBot(bot)
+                      }
+                    },
+                    children: headerNames(newsNames.map(nameOf), 'has news', 'have news')
+                  })
+                : null,
+              jsxs('button', {
+                type: 'button',
+                className: cn('office-count', working.length && 'is-link'),
+                title: working.length ? 'Scroll to the desk' : undefined,
+                onClick: () => working.length && scrollToDesk(roomRef.current, working[0].name),
                 children: [
                   jsx('span', { className: cn('office-pulse', working.length && 'is-live') }),
-                  working.length ? `${working.length} thinking` : roster.length ? 'All quiet' : 'No desks yet'
+                  working.length ? headerNames(working.map(bot => nameOf(bot.name)), 'thinking', 'thinking') : roster.length ? 'All quiet' : 'No desks yet'
                 ]
               })
             ]
@@ -3551,8 +3718,17 @@ function OfficeFloor() {
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
           jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky }),
-          hint ? jsx(HintBubble, { roster, onClose: dismissHint }) : null,
-          jsx(OfficeProps, { now, roomRef }),
+          hint === 'task' || hint === 'play' ? jsx(HintBubble, { roster, stage: hint, onClose: dismissHint }) : null,
+          jsx(OfficeProps, {
+            now,
+            roomRef,
+            onReplay: () => {
+              const state = $ritual.get()
+              if (ritualReplayable(state, Date.now()) && !roster.some(bot => ($fx.get()[bot.name]?.ritualUntil || 0) > Date.now())) {
+                runRitual(roster, jobs, activeProfile, turnBusy)
+              }
+            }
+          }),
           jsx(GameChairs, {}),
           jsx(Puffs, {}),
           isLoading
@@ -3575,7 +3751,7 @@ function OfficeFloor() {
                           jsx('div', {
                             className: 'office-work',
                             children: jsx('div', {
-                              className: 'office-grid',
+                              className: cn('office-grid', roster.length <= 3 && 'is-sparse'),
                               children: roster.map(bot =>
                                 jsx(
                                   Desk,
@@ -3651,6 +3827,19 @@ function injectOfficeCss() {
 .office-root { --office-radius:10px; --office-pill:999px; --office-card-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 16%, transparent), 0 1px 0 rgba(0,0,0,.08), 0 5px 12px rgba(0,0,0,.16); --office-chip-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 18%, transparent), 0 1px 3px rgba(0,0,0,.22); position:relative; display:flex; flex-direction:column; height:100%; min-height:0; background:var(--ui-bg, transparent); color:var(--ui-text-secondary); }
 .office-stage-wrap { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; }
 .office-recap { font-size:11px; color:var(--ui-text-tertiary); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.office-news { height:24px; padding:0 10px; border:0; border-radius:var(--office-pill); background:color-mix(in srgb, var(--ui-accent) 16%, transparent); color:var(--ui-accent); font:inherit; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap; animation: office-hint .4s ease-out 1; }
+.office-news:hover { background:color-mix(in srgb, var(--ui-accent) 26%, transparent); }
+.office-count { border:0; background:transparent; font:inherit; padding:0; }
+.office-count.is-link { cursor:pointer; }
+.office-count.is-link:hover { color:var(--ui-text-primary, inherit); }
+.office-memo { position:absolute; right:14px; top:44px; z-index:3; padding:0; border:0; background:transparent; cursor:pointer; filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); animation: office-memo .5s cubic-bezier(.2,.9,.3,1.3) 1; }
+.office-memo:hover { transform: translateY(-2px) rotate(-4deg); }
+.office-status.is-quiet { animation: office-quiet .5s ease 2.4s forwards; }
+.office-person:hover .office-status.is-quiet, .office-person:focus-visible .office-status.is-quiet { animation:none; opacity:1; }
+.office-person.is-lookup .office-eyes { transform: translate(var(--wdx, 0px), -2.6px); }
+.office-grid.is-sparse { grid-template-columns: repeat(auto-fit, minmax(168px, 210px)); justify-content:center; }
+.office-hint.is-task { left:16px; top:auto; bottom:14px; }
+.office-hint.is-task:before { left:22px; top:auto; bottom:-6px; box-shadow: 1px 1px 0 color-mix(in srgb, CanvasText 16%, transparent); }
 .office-hint { position:absolute; left:206px; top:${WALL_H + 14}px; z-index:12; max-width:300px; display:flex; gap:8px; align-items:flex-start; padding:10px 10px 10px 12px; border-radius:var(--office-radius); background:Canvas; color:CanvasText; font-size:12px; line-height:1.4; box-shadow: var(--office-card-shadow); animation: office-hint .5s cubic-bezier(.2,.9,.3,1.2) 1; }
 .office-hint b { font-weight:600; }
 .office-hint:before { content:""; position:absolute; left:-6px; top:18px; width:12px; height:12px; background:Canvas; transform:rotate(45deg); box-shadow: -1px 1px 0 color-mix(in srgb, CanvasText 16%, transparent); }
@@ -3874,6 +4063,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-bubble { 0% { transform: translateY(0); opacity:.9; } 100% { transform: translateY(-11px); opacity:0; } }
 @keyframes office-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
 @keyframes office-chew { 0%,100% { transform: scaleX(1) rotate(0); } 50% { transform: scaleX(1.06) rotate(-3deg); } }
+@keyframes office-memo { 0% { transform: translateY(-10px) rotate(-12deg); opacity:0; } 100% { transform: none; opacity:1; } }
+@keyframes office-quiet { to { opacity:0; } }
 @keyframes office-hint { 0% { transform: translateY(8px) scale(.96); opacity:0; } 100% { transform: none; opacity:1; } }
 @keyframes office-doodle { 0% { stroke-dashoffset:60; } 50% { stroke-dashoffset:0; } 100% { stroke-dashoffset:0; } }
 @keyframes office-blink { 0%, 94%, 100% { transform: scaleY(1); } 96%, 98% { transform: scaleY(.08); } }
@@ -3883,7 +4074,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-puff-dot { 0% { transform: translate(0, 0); opacity:1; } 100% { transform: translate(var(--dx), -10px); opacity:0; } }
 @keyframes office-boot { 0% { filter: brightness(3) contrast(1.4); } 30% { filter: brightness(.6); } 60% { filter: brightness(2); } 100% { filter: brightness(1); } }
 @media (prefers-reduced-motion: reduce) {
-  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint { animation: none !important; }
+  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news { animation: none !important; }
+  .office-status.is-quiet { animation: none; opacity:.35; }
   .office-eyes { transition: none; }
 }
 `
@@ -3941,11 +4133,25 @@ const plugin = {
           }
         })
         .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('hintSeen'))
+      Promise.resolve(ctx.storage?.get?.('hintStage'))
         .then(value => {
-          $hint.set(!value)
+          $hint.set(value === 'wait' || value === 'play' || value === 'done' ? value : 'task')
         })
-        .catch(() => $hint.set(true))
+        .catch(() => $hint.set('task'))
+      Promise.resolve(ctx.storage?.get?.('news'))
+        .then(value => {
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            $news.set(value)
+          }
+        })
+        .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('ritualHour'))
+        .then(value => {
+          if (typeof value === 'number') {
+            $ritual.set({ hour: value, at: 0 })
+          }
+        })
+        .catch(() => undefined)
       Promise.resolve(ctx.storage?.get?.('trophies'))
         .then(value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {

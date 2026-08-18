@@ -25,7 +25,7 @@ const face = (color, mood = 'idle') => `<svg viewBox="0 0 40 44" width="42" heig
 const desk = ({ name, color, think, away, say, night }) => `
 <div class="office-desk ${think ? 'is-think' : ''} ${away ? 'has-wander' : ''}" data-desk="${name}">
   <div class="office-stage">
-    <div class="office-desk-top"></div>${think ? '<div class="office-confetti">' + [0,1,2,3,4,5,6].map(i => '<i style="--i:' + i + '"></i>').join('') + '</div>' : ''}
+    <div class="office-desk-top"></div>${say && !think ? '<button type="button" class="office-memo"><svg viewBox="0 0 22 18" width="22" height="18"><path d="M1 3 L11 10 L21 3 V16 H1 Z" fill="#fff8e6" stroke="#8a7a5a" stroke-width="1"/><path d="M1 3 H21 L11 10 Z" fill="#f4e9c8" stroke="#8a7a5a" stroke-width="1"/></svg></button>' : ''}${think ? '<div class="office-confetti">' + [0,1,2,3,4,5,6].map(i => '<i style="--i:' + i + '"></i>').join('') + '</div>' : ''}
     ${night ? '<div class="office-lamp" aria-hidden="true"><div class="office-lamp-shade"></div><div class="office-lamp-stem"></div><div class="office-lamp-base"></div></div>' : ''}
     <div class="office-monitor"><div class="office-monitor-head"><div class="office-screen ${think ? 'is-on' : ''}"><div class="office-screen-copy">${say || ''}</div></div><div class="office-monitor-cam"></div></div><div class="office-monitor-neck"></div><div class="office-monitor-base"></div></div>
     <div class="office-seat"><svg viewBox="0 0 42 46" width="42" height="46" class="office-desk-chair "><rect x="8" y="1" width="26" height="22" rx="7" fill="#3b3b43"/><rect x="11" y="4" width="20" height="16" rx="5" fill="#4c4c56"/><rect x="4" y="22" width="34" height="10" rx="4" fill="#454550"/><rect x="4" y="22" width="34" height="3" rx="1.5" fill="rgba(255,255,255,.14)"/><rect x="19.5" y="32" width="3" height="7" rx="1" fill="#8a8a94"/><path d="M21 39 L7 44 M21 39 L35 44 M21 39 L21 45" stroke="#8a8a94" stroke-width="2.4" stroke-linecap="round"/><circle cx="7" cy="44.5" r="1.6" fill="#26262c"/><circle cx="35" cy="44.5" r="1.6" fill="#26262c"/><circle cx="21" cy="45" r="1.6" fill="#26262c"/></svg>${away ? '' : `<div class="office-person is-${think ? 'think' : 'idle'}">${face(color, think ? 'think' : 'idle')}<span class="office-status ${think ? '' : 'is-idle'}">${think ? 'thinking' : 'here'}</span></div>`}</div>
@@ -50,15 +50,16 @@ ${css}
 <div class="office-root is-carpet" id="root">
   <header class="office-header">
     <div><div class="office-kicker">Office</div><h1 class="office-title">The Office</h1></div>
-    <div class="office-head-right"><div class="office-tools"><button type="button" class="office-tool" id="skin">carpet</button><button type="button" class="office-tool">chairs</button></div><div class="office-count"><span class="office-pulse is-live"></span>1 thinking</div></div>
+    <div class="office-head-right"><div class="office-tools"><button type="button" class="office-tool" id="skin">carpet</button><button type="button" class="office-tool">chairs</button></div><button type="button" class="office-news">Hermes has news</button><button type="button" class="office-count is-link"><span class="office-pulse is-live"></span>Scout thinking</button></div>
   </header>
   <div class="office-stage-wrap"><div class="office-room is-carpet" id="room">
     <div class="office-wall" aria-hidden="true"></div>
     <div class="office-plant is-lean" aria-hidden="true"></div><div id="amb"></div>
-    <div class="office-hint" role="note"><div class="office-hint-copy"><b>Try petting Hermes.</b> Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.</div><button type="button" class="office-hint-close">×</button></div><div class="office-tally office-chip">12 done</div>
+    <div class="office-hint is-task" role="note"><div class="office-hint-copy"><b>Give Hermes something small.</b> Type it in the bar below and press Send. Watch the desk.</div><button type="button" class="office-hint-close">×</button></div>
+    <div class="office-hint" role="note" style="display:none"><div class="office-hint-copy"><b>Try petting Hermes.</b> Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.</div><button type="button" class="office-hint-close">×</button></div><div class="office-tally office-chip">12 done</div>
     <button type="button" class="office-clock is-digital"><div class="office-clock-lcd">06:56</div></button>
     <div class="office-floor">
-      <div class="office-work"><div class="office-grid" id="grid"></div></div>
+      <div class="office-work"><div class="office-grid is-sparse" id="grid"></div></div>
       <div class="office-aisle">
         <div class="office-hop-label">hop</div>
         <div class="office-hop-row"><button class="office-hop" data-hop="1">1</button></div>
@@ -129,7 +130,7 @@ function setSkin(s) {
 document.getElementById('skin').onclick = () => setSkin(skins[(skins.indexOf(location.hash.slice(1) || 'carpet') + 1) % skins.length])
 document.getElementById('theme').onclick = () => document.documentElement.classList.toggle('dark')
 document.getElementById('night').onclick = () => { root.classList.toggle('is-night'); render() }
-document.getElementById('more').onclick = () => { more = !more; render() }
+document.getElementById('more').onclick = () => { more = !more; grid.classList.toggle('is-sparse', !more); render() }
 setSkin(location.hash.slice(1) || 'carpet')
 window.setSkin = setSkin
 ${HOPFN}

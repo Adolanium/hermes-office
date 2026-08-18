@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine, completionToken, headerLine, quietStatus };`,
     context
   )
 
@@ -394,6 +394,42 @@ test('bored bots, weekly counters, and the recap line', () => {
   const nextWeek = weekBump(w, 'tasks', 'scout', wed.getTime() + 7 * day)
   assert.equal(nextWeek.tasks, 1, 'a new monday starts fresh')
   assert.equal(nextWeek.hops, 0)
+})
+
+test('a round celebrates once even when two paths see the completion', () => {
+  const { completionToken } = loadHelpers()
+
+  const fresh = { round: 1000 }
+  const token = completionToken(fresh)
+  assert.equal(token, 1000, 'first completion of a round goes through')
+  assert.equal(completionToken({ ...fresh, doneRound: token }), null, 'second path for the same round is ignored')
+  assert.equal(completionToken({ round: 2000, doneRound: 1000 }), 2000, 'a new round can celebrate again')
+  assert.equal(completionToken({}), 0, 'old state without a token still celebrates once')
+  assert.equal(completionToken({ doneRound: 0 }), null)
+})
+
+test('completion wiring: celebrate checks the token, both paths call celebrate, kickoff is gone', () => {
+  assert.match(source, /const round = completionToken\(row\)/)
+  assert.equal((source.match(/celebrate\(/g) || []).length, 3, 'one definition and two call sites')
+  assert.match(source, /round: now, nap: false, goHome: true/, 'startRound stamps the round')
+  assert.doesNotMatch(source, /tell me about yourself/)
+  assert.match(source, /usePulse\(moving \? 16 : 240\)/, 'the 60fps loop only runs while something moves')
+})
+
+test('header names and quiet labels', () => {
+  const { headerLine, quietStatus } = loadHelpers()
+
+  assert.equal(headerLine(['Scout'], 'thinking', 'thinking'), 'Scout thinking')
+  assert.equal(headerLine(['Scout', 'Arke'], 'has news', 'have news'), 'Scout, Arke have news')
+  assert.equal(headerLine(['Scout', 'Arke', 'Hermes', 'Nyx'], 'thinking', 'thinking'), 'Scout, Arke +2 thinking')
+  assert.equal(headerLine([], 'x', 'y'), '')
+
+  assert.equal(quietStatus('here'), true)
+  assert.equal(quietStatus('at desk'), true)
+  assert.equal(quietStatus('exploring'), true)
+  assert.equal(quietStatus('thinking'), false)
+  assert.equal(quietStatus('bored'), false)
+  assert.equal(quietStatus('pizza!'), false)
 })
 
 test('advanceWalk follows a hopscotch path then arrives', () => {
