@@ -41,7 +41,7 @@ Cute bits on the floor:
 - Employee of the month. A gold framed portrait on the wall of the bot with the most finished tasks this month, with a brass plate and their name. Ties keep the current holder, you have to pass them. Resets on the first.
 - The header shows a weekly recap once anything has happened: tasks done, who ate the most pizza, hops taken. Resets on Monday.
 - Keyboard: with a bot picked, arrows nudge it around the floor (Shift for bigger steps), Enter opens its chat, P pets it.
-- The room is a centred diorama with a fixed play height. With one to three bots the desks sit in the middle. It scrolls only when there are more desks than fit.
+- The room is a centred diorama with a fixed play height. It scrolls only when there are more desks than fit.
 - Opening a chat no longer sends a starter message on your behalf. The first real task fills the bubble.
 - If your OS asks for reduced motion, the bobbing and bouncing turn off. Walks stay.
 

@@ -3845,7 +3845,7 @@ function OfficeFloor() {
                           jsx('div', {
                             className: 'office-work',
                             children: jsx('div', {
-                              className: cn('office-grid', roster.length <= 3 && 'is-sparse'),
+                              className: 'office-grid',
                               children: roster.map(bot =>
                                 jsx(
                                   Desk,
@@ -3931,7 +3931,6 @@ function injectOfficeCss() {
 .office-status.is-quiet { animation: office-quiet .5s ease 2.4s forwards; }
 .office-person:hover .office-status.is-quiet, .office-person:focus-visible .office-status.is-quiet { animation:none; opacity:1; }
 .office-person.is-lookup .office-eyes { transform: translate(var(--wdx, 0px), -2.6px); }
-.office-grid.is-sparse { grid-template-columns: repeat(auto-fit, minmax(168px, 210px)); justify-content:center; }
 .office-hint.is-task { left:16px; top:auto; bottom:14px; }
 .office-hint.is-task:before { left:22px; top:auto; bottom:-6px; box-shadow: 1px 1px 0 color-mix(in srgb, CanvasText 16%, transparent); }
 .office-hint { position:absolute; left:206px; top:${WALL_H + 14}px; z-index:12; max-width:300px; display:flex; gap:8px; align-items:flex-start; padding:10px 10px 10px 12px; border-radius:var(--office-radius); background:Canvas; color:CanvasText; font-size:12px; line-height:1.4; box-shadow: var(--office-card-shadow); animation: office-hint .5s cubic-bezier(.2,.9,.3,1.2) 1; }

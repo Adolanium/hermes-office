@@ -59,7 +59,7 @@ ${css}
     <div class="office-hint" role="note" style="display:none"><div class="office-hint-copy"><b>Try petting Hermes.</b> Hover to startle, tap to pet, hold to send to sleep, drag to move. Tap a hop square, press chairs, cycle the room from the header, and give someone a task from the bar below.</div><button type="button" class="office-hint-close">×</button></div><div class="office-tally office-chip">12 done</div>
     <button type="button" class="office-clock is-digital"><div class="office-clock-lcd">06:56</div></button>
     <div class="office-floor">
-      <div class="office-work"><div class="office-grid is-sparse" id="grid"></div></div>
+      <div class="office-work"><div class="office-grid" id="grid"></div></div>
       <div class="office-aisle">
         <div class="office-hop-label">hop</div>
         <div class="office-hop-row"><button class="office-hop" data-hop="1">1</button></div>
@@ -130,7 +130,7 @@ function setSkin(s) {
 document.getElementById('skin').onclick = () => setSkin(skins[(skins.indexOf(location.hash.slice(1) || 'carpet') + 1) % skins.length])
 document.getElementById('theme').onclick = () => document.documentElement.classList.toggle('dark')
 document.getElementById('night').onclick = () => { root.classList.toggle('is-night'); render() }
-document.getElementById('more').onclick = () => { more = !more; grid.classList.toggle('is-sparse', !more); render() }
+document.getElementById('more').onclick = () => { more = !more; render() }
 setSkin(location.hash.slice(1) || 'carpet')
 window.setSkin = setSkin
 ${HOPFN}
