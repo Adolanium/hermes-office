@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText };`,
     context
   )
 
@@ -306,6 +306,45 @@ test('assignChairs seats everyone but one leftover', () => {
   assert.equal(Object.keys(result.assigned).length, 2)
   assert.equal(result.assigned.near.id, chairs[0].id)
   assert.equal(result.leftover, 'far')
+})
+
+test('hopscotch goes out and back, hops fast and flat, and squashes on landing', () => {
+  const { hopCourse, hopSquash, walkEase, beginWalk, walkHop } = loadHelpers()
+  const rows = [{ id: '1' }, { id: '2' }, { id: '3-4' }, { id: '5' }, { id: '6-7' }, { id: '8' }]
+  const course = hopCourse(rows).map(r => r.id)
+
+  assert.deepEqual(course, ['1', '2', '3-4', '5', '6-7', '8', '6-7', '5', '3-4', '2', '1'])
+  assert.deepEqual(hopCourse([{ id: 'x' }]).map(r => r.id), ['x'])
+
+  const hop = beginWalk({ x: 0, y: 0 }, { x: 0, y: 30 }, 0, 'hopscotch')
+  assert.ok(hop.ms >= 360 && hop.ms <= 420, 'a short hop is quick (' + hop.ms + ')')
+  assert.equal(walkEase(0.25, 'hopscotch'), 0.25, 'hops travel at a steady speed')
+  assert.ok(walkEase(0.25, 'bar') < 0.25, 'walks still ease in')
+  assert.equal(walkHop(0.5, 'hopscotch'), 16)
+  assert.equal(walkHop(0, 'hopscotch'), 0)
+
+  const land = hopSquash(0.02, 'hopscotch')
+  const air = hopSquash(0.6, 'hopscotch')
+  const rise = hopSquash(0.24, 'hopscotch')
+  assert.ok(land.sx > 1 && land.sy < 1, 'squash on landing')
+  assert.ok(rise.sy > 1 && rise.sx < 1, 'stretch on take off')
+  assert.equal(air.sx, 1)
+  assert.equal(air.sy, 1)
+  const flat = hopSquash(0.02, 'bar')
+  assert.equal(flat.sx, 1)
+  assert.equal(flat.sy, 1)
+})
+
+test('typedText types out the screen and nameHash is stable', () => {
+  const { typedText, nameHash } = loadHelpers()
+
+  assert.equal(typedText('hello', 0), '▍')
+  assert.equal(typedText('hello', 1000 / 28 * 2 + 1), 'he▍')
+  assert.equal(typedText('hello', 5000), 'hello')
+  assert.equal(typedText('', 5000), '')
+  assert.equal(nameHash('scout'), nameHash('scout'))
+  assert.notEqual(nameHash('scout'), nameHash('scribe'))
+  assert.ok(nameHash('') === 0)
 })
 
 test('advanceWalk follows a hopscotch path then arrives', () => {

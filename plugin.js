@@ -42,6 +42,55 @@ const $jobs = atom({})
 const $backdrop = atom('carpet')
 const $game = atom(null)
 const $pizza = atom({ winner: null, at: 0 })
+const $puffs = atom([])
+const $planes = atom([])
+const $trophies = atom({})
+let puffSeq = 0
+
+// A paper plane from the task bar to a desk. Root relative coordinates.
+function flyPlane(from, to) {
+  if (!from || !to) {
+    return
+  }
+
+  const id = ++puffSeq
+  $planes.set([...$planes.get(), { id, from, to }])
+  setTimeout(() => {
+    $planes.set($planes.get().filter(p => p.id !== id))
+  }, 900)
+}
+
+// One more finished task on the shelf for this bot.
+function addTrophy(name) {
+  const next = { ...$trophies.get(), [name]: ($trophies.get()[name] || 0) + 1 }
+  $trophies.set(next)
+  savePref('trophies', next)
+}
+
+// Job done: confetti at the desk, a trophy, then off to the bar.
+function celebrate(name) {
+  const now = Date.now()
+  patchFx(name, { clapUntil: now + 1100, confettiUntil: now + 950, nap: false, goBar: true, goHome: false })
+  addTrophy(name)
+}
+
+// A little dust ring at a foot position. Gone after half a second.
+function puffAt(x, y) {
+  const id = ++puffSeq
+  $puffs.set([...$puffs.get(), { id, x, y, t0: Date.now() }])
+  setTimeout(() => {
+    $puffs.set($puffs.get().filter(p => p.id !== id))
+  }, 520)
+}
+
+// Honour the OS "reduce motion" setting for the bouncy bits. Walks stay.
+let reducedCache = null
+function reducedMotion() {
+  if (reducedCache === null) {
+    reducedCache = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  }
+  return reducedCache
+}
 const PIZZA_MS = 14000
 
 // Room skins. Every skin is a flat wall band plus a seamless floor tile, drawn
@@ -376,6 +425,25 @@ function deskMood({ isActive, turnBusy, tasked }) {
   return 'idle'
 }
 
+// Small stable number per name, for staggering blinks and the like.
+function nameHash(name) {
+  let h = 0
+  for (const ch of String(name || '')) {
+    h = (h * 31 + ch.charCodeAt(0)) % 100003
+  }
+  return h
+}
+
+// Type the screen text out one letter at a time once a bot starts thinking.
+function typedText(text, elapsedMs, cps = 28) {
+  const full = String(text || '')
+  const n = Math.max(0, Math.floor((elapsedMs || 0) / (1000 / cps)))
+  if (n >= full.length) {
+    return full
+  }
+  return full.slice(0, n) + '\u258d'
+}
+
 function faceMood({ held, asleep, pet, clap, stretch, shy, peek, think }) {
   if (held && asleep) {
     return 'sleep'
@@ -553,6 +621,17 @@ function idleBotNames(roster, jobs, activeProfile, turnBusy) {
 }
 
 const FACE_HALF = 21
+const HOP_ROWS = [[1], [2], [3, 4], [5], [6, 7], [8]]
+
+// Out along the rows, turn at the end, and hop back down.
+function hopCourse(rows) {
+  const out = Array.isArray(rows) ? rows : []
+  if (out.length < 2) {
+    return out.slice()
+  }
+
+  return out.concat(out.slice(0, -1).reverse())
+}
 
 function chairCountForGame(playerCount) {
   return Math.max(0, (playerCount || 0) - 1)
@@ -692,12 +771,16 @@ function assignChairs(players, chairs) {
 }
 
 function beginWalk(from, to, now, kind, path) {
-  const scale = kind === 'hopscotch' ? 0.5 : kind === 'chair' ? 0.55 : kind === 'bar' ? 0.68 : 0.72
+  const scale = kind === 'chair' ? 0.55 : kind === 'bar' ? 0.68 : 0.72
+  const dist = Math.hypot((to?.x || 0) - (from?.x || 0), (to?.y || 0) - (from?.y || 0))
+  const ms = kind === 'hopscotch'
+    ? Math.max(360, Math.min(1400, dist * 9))
+    : Math.max(420, roamMs(from, to) * scale)
   return {
     from,
     to,
     t0: now || 0,
-    ms: Math.max(420, roamMs(from, to) * scale),
+    ms,
     kind: kind || 'home',
     path: Array.isArray(path) ? path : []
   }
@@ -726,12 +809,12 @@ function advanceWalk(walk, now) {
 
 function walkHop(raw, kind) {
   const t = Math.max(0, Math.min(1, raw))
-  if (t >= 1) {
+  if (t >= 1 || (typeof reducedMotion === 'function' && reducedMotion())) {
     return 0
   }
 
   if (kind === 'hopscotch') {
-    return Math.abs(Math.sin(t * Math.PI)) * 12
+    return 4 * t * (1 - t) * 16
   }
 
   if (kind === 'home' || kind === 'chair' || kind === 'bar') {
@@ -739,6 +822,38 @@ function walkHop(raw, kind) {
   }
 
   return Math.abs(Math.sin(t * Math.PI * 3)) * 6
+}
+
+// Travel easing per walk kind. Hops move at a steady speed so the arc reads
+// as a jump. Everything else eases in and out like a stroll.
+function walkEase(raw, kind) {
+  const t = Math.max(0, Math.min(1, raw))
+  return kind === 'hopscotch' ? t : easeInOut(t)
+}
+
+// Squash on landing, stretch on take off. Returns x/y scale for the sprite.
+function hopSquash(raw, kind) {
+  const t = Math.max(0, Math.min(1, raw))
+  if (kind !== 'hopscotch' || (typeof reducedMotion === 'function' && reducedMotion())) {
+    return { sx: 1, sy: 1 }
+  }
+
+  if (t < 0.14) {
+    const k = 1 - t / 0.14
+    return { sx: 1 + 0.14 * k, sy: 1 - 0.16 * k }
+  }
+
+  if (t < 0.34) {
+    const k = Math.sin(((t - 0.14) / 0.2) * Math.PI)
+    return { sx: 1 - 0.06 * k, sy: 1 + 0.1 * k }
+  }
+
+  if (t > 0.9) {
+    const k = (t - 0.9) / 0.1
+    return { sx: 1 + 0.14 * k, sy: 1 - 0.16 * k }
+  }
+
+  return { sx: 1, sy: 1 }
 }
 
 function roamBox(roomEl) {
@@ -911,6 +1026,13 @@ function readFx(name, now) {
     cheers: Boolean(row.atBar) && lingering,
     pizza: (row.pizzaUntil || 0) > now,
     noPizza: (row.noPizzaUntil || 0) > now,
+    drop: (row.dropUntil || 0) > now,
+    boot: (row.bootUntil || 0) > now,
+    hi: (row.hiUntil || 0) > now,
+    confetti: (row.confettiUntil || 0) > now,
+    five: (row.fiveUntil || 0) > now,
+    yawn: (row.yawnUntil || 0) > now,
+    thinkSince: row.thinkSince || 0,
     goHome: Boolean(row.goHome),
     goBar: Boolean(row.goBar)
   }
@@ -1079,7 +1201,7 @@ function watchJob(name, chat) {
 
       if (!state?.inflight && !state?.running) {
         clearJob(name)
-        patchFx(name, { clapUntil: Date.now() + 1100, nap: false, goBar: true, goHome: false })
+        celebrate(name)
       }
     } catch {
       /* keep waiting */
@@ -1151,6 +1273,8 @@ function dropBot(name, next, roomEl) {
   const now = Date.now()
   const others = Object.entries($seats.get()).filter(([key]) => key !== name)
   const seats = { ...$seats.get(), [name]: next }
+  patchFx(name, { dropUntil: now + 460 })
+  puffAt(next.x + FACE_HALF, next.y + FACE_HALF * 2)
 
   for (const [other, pos] of others) {
     if (near(next, pos, 70)) {
@@ -1356,15 +1480,31 @@ function startWalkToBar(name, roomEl) {
   startWalk(name, dest, roomEl, 'bar')
 }
 
+// The course: one landing per row (pairs are landed on together), out to the
+// far end and back again. Each point carries the square ids it covers so the
+// chalk can light up under the hopper.
 function hopscotchPoints(roomEl) {
   if (!roomEl) {
     return []
   }
 
-  return [...roomEl.querySelectorAll('[data-hop]')]
-    .sort((a, b) => Number(a.getAttribute('data-hop')) - Number(b.getAttribute('data-hop')))
-    .map(el => faceOn(roomEl, el))
-    .filter(Boolean)
+  const rows = HOP_ROWS.map(row => {
+    const spots = row
+      .map(n => roomEl.querySelector('[data-hop="' + n + '"]'))
+      .map(el => faceOn(roomEl, el))
+      .filter(Boolean)
+    if (!spots.length) {
+      return null
+    }
+
+    return {
+      id: row.join('-'),
+      x: spots.reduce((sum, p) => sum + p.x, 0) / spots.length,
+      y: spots.reduce((sum, p) => sum + p.y, 0) / spots.length
+    }
+  }).filter(Boolean)
+
+  return hopCourse(rows)
 }
 
 function startHopscotch(name, roomEl) {
@@ -1383,7 +1523,8 @@ function startHopscotch(name, roomEl) {
 
 // Someone got a task: they walk home, and a fresh pizza lands on the counter.
 function startRound(name) {
-  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0 })
+  const now = Date.now()
+  patchFx(name, { nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700 })
   $pizza.set(freshPizza(Date.now()))
 }
 
@@ -1405,10 +1546,100 @@ function finishWalk(name, walk) {
     const now = Date.now()
     patchFx(name, { atBar: true, lingerUntil: now + 4200, clapUntil: now + 1100, nap: false })
 
+    const buddy = Object.entries($fx.get()).find(([other, row]) => other !== name && row.atBar && (row.lingerUntil || 0) > now)
+    if (buddy) {
+      patchFx(name, { fiveUntil: now + 1500 })
+      patchFx(buddy[0], { fiveUntil: now + 1500, clapUntil: now + 900, lingerUntil: Math.max(buddy[1].lingerUntil || 0, now + 1800) })
+    }
+
     if ($backdrop.get() === 'pizza') {
       const { pizza, won } = claimPizza($pizza.get(), name, now)
       $pizza.set(pizza)
       patchFx(name, won ? { pizzaUntil: now + PIZZA_MS, lingerUntil: now + 6000 } : { noPizzaUntil: now + 4200 })
+    }
+  }
+}
+
+// Two bots crossing paths say hi. One hello per pair every so often.
+const hiSeen = new Map()
+let hiTick = 0
+
+function tickHellos(now, roomEl) {
+  if (!roomEl || now - hiTick < 160) {
+    return
+  }
+
+  hiTick = now
+  const walks = $walks.get()
+  const roam = $roam.get()
+  const names = Object.keys($seats.get()).filter(name => walks[name] || roam[name])
+  if (names.length < 2) {
+    return
+  }
+
+  const spots = names.map(name => ({ name, pos: currentPos(name, roomEl, now) })).filter(x => x.pos)
+  const others = Object.keys($seats.get()).filter(name => !walks[name] && !roam[name]).map(name => ({ name, pos: $seats.get()[name] }))
+
+  for (const a of spots) {
+    for (const b of [...spots, ...others]) {
+      if (a.name === b.name || !near(a.pos, b.pos, 46)) {
+        continue
+      }
+
+      const key = [a.name, b.name].sort().join('|')
+      if (now - (hiSeen.get(key) || 0) < 9000) {
+        continue
+      }
+
+      hiSeen.set(key, now)
+      patchFx(a.name, { hiUntil: now + 1100 })
+      patchFx(b.name, { hiUntil: now + 1100 })
+    }
+  }
+}
+
+// After dark, bots left alone at their desks get sleepy: the odd yawn, and
+// after a few quiet minutes they nod off. A task or a pet wakes them.
+let nightTick = 0
+
+function tickNight(now, night, roster, jobs, activeProfile, turnBusy) {
+  if (now - nightTick < 1000) {
+    return
+  }
+
+  nightTick = now
+  const seats = $seats.get()
+  const drag = $drag.get()
+
+  for (const bot of roster || []) {
+    const name = bot.name
+    const row = $fx.get()[name] || {}
+    const busy = deskMood({ isActive: name === activeProfile, turnBusy, tasked: Boolean(jobs?.[name]) }) === 'think'
+    const away = Boolean(seats[name]) || drag?.name === name
+
+    if (!night || busy || away) {
+      if (row.idleSince) {
+        patchFx(name, { idleSince: 0 })
+      }
+      continue
+    }
+
+    if (row.nap) {
+      continue
+    }
+
+    if (!row.idleSince) {
+      patchFx(name, { idleSince: now })
+      continue
+    }
+
+    if (now - row.idleSince > 150000) {
+      patchFx(name, { nap: true, yawnUntil: 0 })
+      continue
+    }
+
+    if ((row.yawnUntil || 0) < now && Math.random() < 0.02) {
+      patchFx(name, { yawnUntil: now + 1500 })
     }
   }
 }
@@ -1423,9 +1654,15 @@ function tickWalks(now) {
     if (step.done) {
       delete next[name]
       finishWalk(name, walk)
+      if (walk.to && walk.kind !== 'home') {
+        puffAt(walk.to.x + FACE_HALF, walk.to.y + FACE_HALF * 2)
+      }
       dirty = true
     } else if (step.walk && step.walk !== walk) {
       next[name] = step.walk
+      if (walk.kind === 'hopscotch' && walk.to) {
+        puffAt(walk.to.x + FACE_HALF, walk.to.y + FACE_HALF * 2)
+      }
       dirty = true
     }
   }
@@ -1482,6 +1719,8 @@ function startMusicalChairs(roster, jobs, activeProfile, turnBusy, roomEl) {
     return false
   }
 
+  const watchers = roster.map(bot => bot.name).filter(name => !players.includes(name) && !jobs[name])
+
   const seats = { ...$seats.get() }
 
   for (const name of players) {
@@ -1507,7 +1746,7 @@ function startMusicalChairs(roster, jobs, activeProfile, turnBusy, roomEl) {
     }
   }
 
-  $game.set({ phase: 'scramble', t0: Date.now(), players, chairs, ring })
+  $game.set({ phase: 'scramble', t0: Date.now(), players, chairs, ring, watchers })
   tap()
   return true
 }
@@ -1552,6 +1791,26 @@ function tickGame(now, roomEl, jobs) {
     tickRoam(now, roomEl, { scramble: true, only: game.players, jobs, ring: game.ring })
 
     if (now - game.t0 > 4200) {
+      // Music stops. Everyone freezes where they are for a beat.
+      const seats = { ...$seats.get() }
+      const roam = { ...$roam.get() }
+      for (const name of game.players || []) {
+        const pos = currentPos(name, roomEl, now)
+        if (pos) {
+          seats[name] = pos
+        }
+        delete roam[name]
+      }
+      saveSeats(seats)
+      $roam.set(roam)
+      $game.set({ ...game, phase: 'freeze', t0: now })
+    }
+
+    return
+  }
+
+  if (game.phase === 'freeze') {
+    if (now - game.t0 > 420) {
       startSit(game, roomEl)
     }
 
@@ -1565,6 +1824,12 @@ function tickGame(now, roomEl, jobs) {
       for (const name of game.players || []) {
         if (name !== game.leftover) {
           patchFx(name, { clapUntil })
+        }
+      }
+
+      for (const name of game.watchers || []) {
+        if (!jobs?.[name]) {
+          patchFx(name, { clapUntil: now + 1400 })
         }
       }
 
@@ -1624,9 +1889,19 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
             strokeLinecap: 'round'
           })
         : jsxs('g', {
+            className: 'office-eyes',
             children: [
-              jsx('ellipse', { cx: eyeL, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink }),
-              jsx('ellipse', { cx: eyeR, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink }),
+              jsxs('g', {
+                className: 'office-blink',
+                style: {
+                  animationDuration: `${(3.2 + (nameHash(name) % 27) / 10).toFixed(1)}s`,
+                  animationDelay: `-${nameHash(name) % 2900}ms`
+                },
+                children: [
+                  jsx('ellipse', { cx: eyeL, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink }),
+                  jsx('ellipse', { cx: eyeR, cy: eyeY, rx: shy ? 3.1 : 2.4, ry: shy ? 3.4 : peek ? 3 : 2.4, fill: ink })
+                ]
+              }),
               shy
                 ? jsx('ellipse', { cx: 31, cy: 9, rx: 1.6, ry: 2.4, fill: 'rgba(120,190,255,0.95)' })
                 : null
@@ -1648,7 +1923,7 @@ function WorkerFace({ color, image, mood, size = 36, name }) {
   }, name)
 }
 
-function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza }) {
+function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn }) {
   if (face === 'sleep') {
     return 'zzz'
   }
@@ -1669,6 +1944,14 @@ function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza
     return 'no pizza'
   }
 
+  if (five) {
+    return 'high five!'
+  }
+
+  if (yawn && face !== 'sleep') {
+    return 'yawn'
+  }
+
   if (cheers) {
     return 'cheers'
   }
@@ -1683,6 +1966,10 @@ function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza
 
   if (gamePhase === 'scramble') {
     return 'go'
+  }
+
+  if (gamePhase === 'freeze') {
+    return '!'
   }
 
   if (gamePhase === 'sit') {
@@ -1703,6 +1990,22 @@ function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza
 
   if (face === 'think') {
     return 'thinking'
+  }
+
+  if (walkKind === 'hopscotch') {
+    return 'hop hop'
+  }
+
+  if (walkKind === 'bar') {
+    return 'to the bar'
+  }
+
+  if (walkKind === 'home') {
+    return 'heading back'
+  }
+
+  if (walkKind === 'chair') {
+    return 'mine!'
   }
 
   if (wander) {
@@ -1729,9 +2032,9 @@ function PizzaSlice({ className }) {
   })
 }
 
-function Person({ bot, look, face, wander, closer, whisper, cheers, gamePhase, leftover, pizza, noPizza, style, onPetStart }) {
+function Person({ bot, look, face, wander, closer, whisper, hi, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, style, onPetStart }) {
   return jsxs('div', {
-    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza'),
+    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop'),
     style,
     role: 'button',
     tabIndex: 0,
@@ -1751,14 +2054,15 @@ function Person({ bot, look, face, wander, closer, whisper, cheers, gamePhase, l
       face === 'pet' || face === 'clap' || cheers
         ? jsxs('div', { className: 'office-hearts', 'aria-hidden': true, children: [jsx('span', { children: '♥' }), jsx('span', { children: '♥' }), jsx('span', { children: '♥' })] })
         : null,
-      whisper
-        ? jsx('div', { className: 'office-whisper', children: '…' })
+      whisper || hi
+        ? jsx('div', { className: cn('office-whisper', hi && 'is-hi'), children: hi ? 'hi!' : '…' })
         : null,
+      wander ? jsx('span', { className: 'office-ground', 'aria-hidden': true }) : null,
       pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
       jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name }),
       jsx('span', {
         className: cn('office-status', (face === 'idle' || face === 'shy' || face === 'sleep') && 'is-idle', noPizza && 'is-sad'),
-        children: statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza })
+        children: statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn })
       })
     ]
   })
@@ -1776,7 +2080,7 @@ function usePersonHandlers(bot, roomRef, held) {
     setPet(true)
     clearTimeout(petTimer.current)
     petTimer.current = setTimeout(() => setPet(false), 900)
-    patchFx(bot.name, { stretchUntil: now + 700, closerUntil: now + 2600 })
+    patchFx(bot.name, { stretchUntil: now + 700, closerUntil: now + 2600, nap: false, idleSince: 0 })
     pickBot(bot.name)
     tap()
   }
@@ -1879,14 +2183,27 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
     asleep: fx.nap || Boolean(drag?.asleep && held),
     pet,
     clap: fx.clap,
-    stretch: fx.stretch,
+    stretch: fx.stretch || fx.yawn,
     shy,
     peek: peek && !seat,
     think
   })
   const output = outputText(bot)
+  const game = useValue($game)
+  const trophies = useValue($trophies)
+  const deskRef = useRef(null)
+  let watchDx = null
+
+  if (game?.ring && !seat && !think && !(game.players || []).includes(bot.name) && deskRef.current && roomRef?.current) {
+    const me = elPos(roomRef.current, deskRef.current)
+    if (me) {
+      const box = deskRef.current.getBoundingClientRect()
+      watchDx = game.ring.center.x > me.x + box.width / 2 ? '2px' : '-2px'
+    }
+  }
 
   return jsxs('div', {
+    ref: deskRef,
     className: cn(
       'office-desk',
       think && 'is-think',
@@ -1912,7 +2229,14 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                 ]
               })
             : null,
-          jsx(Monitor, { on: think, text: output }),
+          jsx(Monitor, { on: think, text: output, since: fx.thinkSince, now, boot: fx.boot }),
+          fx.confetti
+            ? jsx('div', {
+                className: 'office-confetti',
+                'aria-hidden': true,
+                children: Array.from({ length: 7 }, (_, i) => jsx('i', { style: { '--i': i } }, i))
+              })
+            : null,
           jsxs('div', {
             className: 'office-seat',
             children: [
@@ -1926,6 +2250,9 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                     wander: false,
                     closer: fx.closer,
                     whisper: fx.whisper,
+                    hi: fx.hi,
+                    yawn: fx.yawn,
+                    style: watchDx ? { '--wdx': watchDx } : undefined,
                     onPetStart: { ...handlers, isActive }
                   })
             ]
@@ -1944,7 +2271,13 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
         title: `Give ${look.title} a task. Double-click to open their chat.`,
         children: [
           jsx('div', { className: 'office-name', children: look.title }),
-          jsx('div', { className: 'office-handle', children: `@${handle}` })
+          jsxs('div', {
+            className: 'office-handle',
+            children: [
+              `@${handle}`,
+              trophies[bot.name] ? jsx('span', { className: 'office-stars', title: `${trophies[bot.name]} tasks done`, children: `\u2605 ${trophies[bot.name]}` }) : null
+            ]
+          })
         ]
       }),
       output
@@ -1976,7 +2309,9 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
   })
 }
 
-function Monitor({ on, text }) {
+function Monitor({ on, text, since, now, boot }) {
+  const copy = on ? typedText(text || '> working on it', since ? Math.max(0, (now || 0) - since) : 1e9) : text
+
   return jsxs('div', {
     className: 'office-monitor',
     'aria-hidden': true,
@@ -1985,8 +2320,8 @@ function Monitor({ on, text }) {
         className: 'office-monitor-head',
         children: [
           jsx('div', {
-            className: cn('office-screen', on && 'is-on', text && 'has-copy'),
-            children: text ? jsx('div', { className: 'office-screen-copy', children: text }) : null
+            className: cn('office-screen', on && 'is-on', copy && 'has-copy', boot && 'is-boot'),
+            children: copy ? jsx('div', { className: 'office-screen-copy', children: copy }) : null
           }),
           jsx('div', { className: 'office-monitor-cam' })
         ]
@@ -2005,13 +2340,23 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
   const { shy, pet, handlers } = usePersonHandlers(bot, roomRef, held)
   let seat = held ? { x: drag.x, y: drag.y } : seats[bot.name]
 
+  let squash = null
+  let lift = 0
+  let heading = 0
+
   if (walk) {
     const raw = Math.min(1, (now - walk.t0) / Math.max(1, walk.ms))
-    const t = easeInOut(raw)
+    const t = walkEase(raw, walk.kind)
     const hop = walkHop(raw, walk.kind)
     seat = {
       x: walk.from.x + (walk.to.x - walk.from.x) * t,
       y: walk.from.y + (walk.to.y - walk.from.y) * t - hop
+    }
+    lift = Math.min(1, hop / 12)
+    heading = Math.sign(walk.to.x - walk.from.x)
+    if (walk.kind === 'hopscotch') {
+      const { sx, sy } = hopSquash(raw, walk.kind)
+      squash = 'scale(' + sx.toFixed(3) + ', ' + sy.toFixed(3) + ')'
     }
   } else if (roam && !held) {
     const span = Math.max(1, roam.ms)
@@ -2022,6 +2367,8 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
       x: roam.from.x + (roam.to.x - roam.from.x) * t,
       y: roam.from.y + (roam.to.y - roam.from.y) * t - hop
     }
+    lift = Math.min(1, hop / 12)
+    heading = raw < 1 ? Math.sign(roam.to.x - roam.from.x) : 0
   }
 
   if (!seat) {
@@ -2047,9 +2394,19 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     cheers: fx.cheers,
     pizza: fx.pizza,
     noPizza: fx.noPizza,
+    walkKind: walk?.kind || null,
+    drop: fx.drop,
+    hi: fx.hi,
+    five: fx.five,
     gamePhase: game?.players?.includes(bot.name) ? game.phase : null,
     leftover: game?.leftover === bot.name,
-    style: { left: seat.x, top: seat.y },
+    style: {
+      left: seat.x,
+      top: seat.y,
+      transform: squash || undefined,
+      '--lift': lift.toFixed(2),
+      '--wdx': heading ? `${heading * 2}px` : '0px'
+    },
     onPetStart: { ...handlers, isActive }
   })
 }
@@ -2067,6 +2424,7 @@ function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
     flushGoFlags(roomRef.current)
     tickWalks(now)
     tickGame(now, roomRef.current, jobs)
+    tickHellos(now, roomRef.current)
   }, [now, jobs, roomRef])
 
   return jsx('div', {
@@ -2140,26 +2498,137 @@ function DeskChair({ wobble }) {
   })
 }
 
+function Puffs() {
+  const puffs = useValue($puffs)
+  if (!puffs.length) {
+    return null
+  }
+
+  return jsx('div', {
+    className: 'office-puff-layer',
+    'aria-hidden': true,
+    children: puffs.map(p => jsx('span', { className: 'office-puff', style: { left: p.x, top: p.y } }, p.id))
+  })
+}
+
+// Eyes follow the pointer when it is close. Done straight on the DOM so a
+// moving mouse does not re-render the whole floor.
+function useEyeTracking(roomRef) {
+  useEffect(() => {
+    const room = roomRef.current
+    if (!room || reducedMotion()) {
+      return undefined
+    }
+
+    let frame = 0
+    let last = null
+
+    const apply = () => {
+      frame = 0
+      const faces = room.querySelectorAll('svg.office-face')
+      for (const face of faces) {
+        if (!last) {
+          face.style.removeProperty('--edx')
+          face.style.removeProperty('--edy')
+          continue
+        }
+
+        const box = face.getBoundingClientRect()
+        const vx = last.x - (box.left + box.width / 2)
+        const vy = last.y - (box.top + box.height / 2)
+        const d = Math.hypot(vx, vy)
+        if (d > 200 || d < 1) {
+          face.style.removeProperty('--edx')
+          face.style.removeProperty('--edy')
+          continue
+        }
+
+        const k = Math.min(1, d / 60) * 2.2
+        face.style.setProperty('--edx', `${((vx / d) * k).toFixed(2)}px`)
+        face.style.setProperty('--edy', `${((vy / d) * k * 0.7).toFixed(2)}px`)
+      }
+    }
+
+    const onMove = event => {
+      last = { x: event.clientX, y: event.clientY }
+      if (!frame) {
+        frame = requestAnimationFrame(apply)
+      }
+    }
+
+    const onLeave = () => {
+      last = null
+      if (!frame) {
+        frame = requestAnimationFrame(apply)
+      }
+    }
+
+    room.addEventListener('pointermove', onMove)
+    room.addEventListener('pointerleave', onLeave)
+    return () => {
+      room.removeEventListener('pointermove', onMove)
+      room.removeEventListener('pointerleave', onLeave)
+      if (frame) {
+        cancelAnimationFrame(frame)
+      }
+    }
+  }, [roomRef])
+}
+
 function GameChairs() {
   const game = useValue($game)
   if (!game?.chairs?.length) {
     return null
   }
 
-  return jsx('div', {
+  const center = game.ring?.center
+  const notes = game.phase === 'scramble' && center && !reducedMotion()
+    ? [0, 1, 2, 3].map(i =>
+        jsx('span', {
+          className: 'office-note',
+          style: { left: center.x + [-30, 18, -6, 34][i], top: center.y + [-46, -60, -78, -40][i], '--d': `${i * 0.45}s` },
+          children: i % 2 ? '\u266a' : '\u266b'
+        }, i)
+      )
+    : []
+
+  return jsxs('div', {
     className: 'office-game-layer',
     'aria-hidden': true,
-    children: game.chairs.map(chair =>
-      jsx(GameChair, { id: chair.id, claimed: game.phase === 'out', style: { left: chair.x, top: chair.y } }, chair.id)
-    )
+    children: [
+      ...game.chairs.map(chair =>
+        jsx(GameChair, { id: chair.id, claimed: game.phase === 'out', style: { left: chair.x, top: chair.y } }, chair.id)
+      ),
+      ...notes
+    ]
   })
 }
 
-// Chalk hopscotch on the floor: 1, 2, 3|4, 5, 6|7, 8. Bots hop the numbers in
-// order, so the pairs are just squares that happen to sit side by side.
-const HOP_ROWS = [[1], [2], [3, 4], [5], [6, 7], [8]]
+// Chalk hopscotch on the floor: 1, 2, 3|4, 5, 6|7, 8.
 
-function Hopscotch({ onHop }) {
+function litHopSquares(walks, now) {
+  const lit = new Set()
+  for (const walk of Object.values(walks || {})) {
+    if (walk?.kind !== 'hopscotch') {
+      continue
+    }
+
+    const raw = (now - walk.t0) / Math.max(1, walk.ms)
+    const spot = raw < 0.45 ? walk.from : raw > 0.8 ? walk.to : null
+    for (const id of String(spot?.id || '').split('-')) {
+      if (id) {
+        lit.add(id)
+      }
+    }
+  }
+
+  return lit
+}
+
+function Hopscotch({ onHop, now }) {
+  const walks = useValue($walks)
+  const lit = litHopSquares(walks, now)
+
   return jsxs('div', {
     className: 'office-aisle',
     children: [
@@ -2174,7 +2643,7 @@ function Hopscotch({ onHop }) {
                 'button',
                 {
                   type: 'button',
-                  className: 'office-hop',
+                  className: cn('office-hop', lit.has(String(n)) && 'is-lit'),
                   'data-hop': String(n),
                   'aria-label': `Hopscotch square ${n}`,
                   onPointerDown: event => {
@@ -2287,16 +2756,18 @@ function BarTaps() {
   })
 }
 
-function OfficeBar({ count }) {
+function OfficeBar({ count, now }) {
   const n = Math.min(6, Math.max(3, count || 3))
   const backdrop = useValue($backdrop)
   const pizza = useValue($pizza)
   const parlor = backdrop === 'pizza'
+  const ding = parlor && pizza?.at && !pizza.winner && (now || 0) - pizza.at < 1400
 
   return jsxs('aside', {
     className: 'office-bar',
     children: [
       jsx('div', { className: 'office-bar-sign', children: parlor ? 'Pizza' : 'Bar' }),
+      ding ? jsx('div', { className: 'office-ding office-chip', children: 'ding!' }) : null,
       jsx('div', { className: 'office-bar-shelf', 'aria-hidden': true, children: parlor ? null : jsx(BarBottles, {}) }),
       jsx('div', {
         className: 'office-bar-counter',
@@ -2344,6 +2815,68 @@ function FloorTools({ roster, jobs, activeProfile, turnBusy, roomRef, idleCount 
       })
     ]
   })
+}
+
+// One small living thing per room, so each skin feels like a place. Plus the
+// tally board on the wall once anyone has finished a task.
+function Ambience({ backdrop, tally }) {
+  const bits = []
+
+  if (tally > 0) {
+    bits.push(jsx('div', { className: 'office-tally office-chip', title: 'Tasks finished in this office', children: `${tally} done` }, 'tally'))
+  }
+
+  if (backdrop === 'garden') {
+    bits.push(
+      jsx('svg', { className: 'office-butterfly is-a', viewBox: '0 0 20 14', width: 28, height: 20, children: jsxs('g', { children: [
+        jsx('ellipse', { className: 'office-wing', cx: 6, cy: 7, rx: 6, ry: 5, fill: '#f6a5c0' }),
+        jsx('ellipse', { className: 'office-wing is-r', cx: 14, cy: 7, rx: 6, ry: 5, fill: '#f6a5c0' }),
+        jsx('rect', { x: 9, y: 2, width: 2, height: 10, rx: 1, fill: '#4a3a3a' })
+      ] }) }, 'b1'),
+      jsx('svg', { className: 'office-butterfly is-b', viewBox: '0 0 20 14', width: 22, height: 15, children: jsxs('g', { children: [
+        jsx('ellipse', { className: 'office-wing', cx: 6, cy: 7, rx: 6, ry: 5, fill: '#8fd0ff' }),
+        jsx('ellipse', { className: 'office-wing is-r', cx: 14, cy: 7, rx: 6, ry: 5, fill: '#8fd0ff' }),
+        jsx('rect', { x: 9, y: 2, width: 2, height: 10, rx: 1, fill: '#4a3a3a' })
+      ] }) }, 'b2')
+    )
+  }
+
+  if (backdrop === 'nightclub') {
+    bits.push(jsx('div', { className: 'office-sweep' }, 'sweep'))
+  }
+
+  if (backdrop === 'pizza') {
+    bits.push(jsxs('svg', { className: 'office-oven', viewBox: '0 0 44 50', width: 44, height: 50, children: [
+      jsx('rect', { x: 2, y: 8, width: 40, height: 42, rx: 4, fill: '#8a5a3a' }),
+      jsx('rect', { x: 2, y: 8, width: 40, height: 6, rx: 3, fill: '#a87048' }),
+      jsx('rect', { x: 14, y: 2, width: 16, height: 8, rx: 2, fill: '#5a3a26' }),
+      jsx('path', { d: 'M8 42 V30 A14 12 0 0 1 36 30 V42 Z', fill: '#2a1810' }),
+      jsx('path', { className: 'office-oven-fire', d: 'M12 42 V32 A10 9 0 0 1 32 32 V42 Z', fill: '#ff8a2a' }),
+      jsx('rect', { x: 6, y: 42, width: 32, height: 4, rx: 1, fill: '#5a3a26' })
+    ] }, 'oven'))
+  }
+
+  if (backdrop === 'carpet') {
+    bits.push(jsxs('svg', { className: 'office-cooler', viewBox: '0 0 22 52', width: 22, height: 52, children: [
+      jsx('rect', { x: 4, y: 20, width: 14, height: 30, rx: 2, fill: '#e9ecf0' }),
+      jsx('rect', { x: 4, y: 20, width: 14, height: 4, fill: '#c9d0da' }),
+      jsx('rect', { x: 8, y: 30, width: 6, height: 4, rx: 1, fill: '#4f7cff' }),
+      jsx('rect', { x: 5, y: 2, width: 12, height: 19, rx: 4, fill: '#a9d8f2', opacity: 0.9 }),
+      jsx('circle', { className: 'office-bubble', cx: 9, cy: 16, r: 1.3, fill: '#fff' }),
+      jsx('circle', { className: 'office-bubble is-2', cx: 13, cy: 18, r: 1, fill: '#fff' })
+    ] }, 'cooler'))
+  }
+
+  if (backdrop === 'loft') {
+    bits.push(jsxs('svg', { className: 'office-pendant', viewBox: '0 0 30 40', width: 30, height: 40, children: [
+      jsx('rect', { x: 14, y: 0, width: 2, height: 18, fill: '#3a3a3a' }),
+      jsx('path', { d: 'M4 30 L11 18 H19 L26 30 Z', fill: '#3f3f44' }),
+      jsx('ellipse', { cx: 15, cy: 30, rx: 11, ry: 2.5, fill: '#ffe4a8' }),
+      jsx('circle', { cx: 15, cy: 27, r: 3, fill: '#fff2c8' })
+    ] }, 'pendant'))
+  }
+
+  return jsx(Fragment, { children: bits })
 }
 
 function OfficeProps({ now, roomRef }) {
@@ -2494,6 +3027,49 @@ function BotPicker({ roster, bot, look }) {
   })
 }
 
+// Measure the send button and the target desk's monitor, both relative to the
+// office root, and let a plane fly between them.
+function launchPlane(buttonEl, name) {
+  const root = buttonEl?.closest?.('.office-root')
+  const monitor = root?.querySelector?.(`[data-desk=${JSON.stringify(name)}] .office-monitor-head`)
+  if (!root || !monitor || reducedMotion()) {
+    return
+  }
+
+  const base = root.getBoundingClientRect()
+  const a = buttonEl.getBoundingClientRect()
+  const b = monitor.getBoundingClientRect()
+  flyPlane(
+    { x: a.left - base.left + a.width / 2, y: a.top - base.top + a.height / 2 },
+    { x: b.left - base.left + b.width / 2, y: b.top - base.top + b.height / 2 }
+  )
+}
+
+function Planes() {
+  const planes = useValue($planes)
+  if (!planes.length) {
+    return null
+  }
+
+  return jsx('div', {
+    className: 'office-plane-layer',
+    'aria-hidden': true,
+    children: planes.map(p => {
+      const dx = p.to.x - p.from.x
+      const dy = p.to.y - p.from.y
+      const rot = (Math.atan2(dy, dx) * 180) / Math.PI
+      return jsx('svg', {
+        viewBox: '0 0 24 16',
+        width: 24,
+        height: 16,
+        className: 'office-plane',
+        style: { left: p.from.x, top: p.from.y, '--dx': `${dx}px`, '--dy': `${dy}px`, '--rot': `${rot}deg` },
+        children: jsx('path', { d: 'M1 8 L23 1 L15 15 L11 10 Z M11 10 L23 1', fill: '#f4f4f8', stroke: '#6b6f7a', strokeWidth: 1, strokeLinejoin: 'round' })
+      }, p.id)
+    })
+  })
+}
+
 function TaskBar({ roster, activeProfile }) {
   const selected = useValue($selected)
   const focusToken = useValue($focusTask)
@@ -2501,6 +3077,7 @@ function TaskBar({ roster, activeProfile }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const inputRef = useRef(null)
+  const sendRef = useRef(null)
   const picked = resolvePicked(roster, selected, activeProfile)
   const bot = roster.find(row => row.name === picked) || null
   const look = bot ? botLook(bot) : null
@@ -2529,6 +3106,7 @@ function TaskBar({ roster, activeProfile }) {
     setText('')
     setBusy(true)
     pickBot(bot.name)
+    launchPlane(sendRef.current, bot.name)
 
     try {
       await sendTask(bot, task)
@@ -2566,6 +3144,7 @@ function TaskBar({ roster, activeProfile }) {
         onChange: event => setText(event.target.value)
       }),
       jsx('button', {
+        ref: sendRef,
         type: 'submit',
         className: 'office-task-send',
         disabled: busy || sending || !text.trim(),
@@ -2585,6 +3164,7 @@ function OfficeFloor() {
   const peek = useValue($peekUntil) > now
   const jobs = useValue($jobs)
   const backdrop = useValue($backdrop)
+  const trophies = useValue($trophies)
   const roomRef = useRef(null)
   const prevBusy = useRef(false)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
@@ -2600,7 +3180,7 @@ function OfficeFloor() {
 
   useEffect(() => {
     if (prevBusy.current && !turnBusy && activeProfile) {
-      patchFx(activeProfile, { clapUntil: Date.now() + 1100, nap: false, goBar: true, goHome: false })
+      celebrate(activeProfile)
     }
 
     if (turnBusy && activeProfile) {
@@ -2614,7 +3194,12 @@ function OfficeFloor() {
     tickRoam(now, roomRef.current, { jobs })
   }, [now, jobs])
 
+  useEffect(() => {
+    tickNight(now, night, roster, jobs, activeProfile, turnBusy)
+  }, [now, night, roster, jobs, activeProfile, turnBusy])
+
   useEffect(() => () => stopMusicalChairs(), [])
+  useEyeTracking(roomRef)
 
   const onFloor = event => {
     const mark = event.target?.classList
@@ -2681,8 +3266,10 @@ function OfficeFloor() {
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
+          jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0) }),
           jsx(OfficeProps, { now, roomRef }),
           jsx(GameChairs, {}),
+          jsx(Puffs, {}),
           isLoading
             ? jsx('div', { className: 'office-empty', children: 'Opening the office…' })
             : error
@@ -2725,8 +3312,8 @@ function OfficeFloor() {
                               )
                             })
                           }),
-                          jsx(Hopscotch, { onHop: playHop }),
-                          jsx(OfficeBar, { count: roster.length })
+                          jsx(Hopscotch, { onHop: playHop, now }),
+                          jsx(OfficeBar, { count: roster.length, now })
                         ]
                       }),
                       jsx(Wanderers, {
@@ -2740,7 +3327,8 @@ function OfficeFloor() {
                   })
         ]
       }),
-      roster.length ? jsx(TaskBar, { roster, activeProfile }) : null
+      roster.length ? jsx(TaskBar, { roster, activeProfile }) : null,
+      jsx(Planes, {})
     ]
   })
 }
@@ -2775,7 +3363,27 @@ function injectOfficeCss() {
   }
 
   const css = `
-.office-root { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--ui-bg, transparent); color:var(--ui-text-secondary); }
+.office-root { position:relative; display:flex; flex-direction:column; height:100%; min-height:0; background:var(--ui-bg, transparent); color:var(--ui-text-secondary); }
+.office-plane-layer { position:absolute; inset:0; pointer-events:none; z-index:40; overflow:hidden; }
+.office-plane { position:absolute; margin:-8px 0 0 -12px; transform-origin:50% 50%; animation: office-plane .8s cubic-bezier(.3,.6,.4,1) forwards; filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }
+.office-confetti { position:absolute; left:50%; top:60px; width:0; height:0; z-index:9; pointer-events:none; }
+.office-confetti i { position:absolute; left:-3px; top:-3px; width:6px; height:6px; border-radius:1px; background: hsl(calc(var(--i) * 51deg), 85%, 60%); animation: office-confetti .95s cubic-bezier(.2,.7,.4,1) forwards; --ang: calc(var(--i) * 51deg - 150deg); }
+.office-stars { margin-left:6px; color:#d9a422; font-weight:600; }
+.office-note { position:absolute; font-size:14px; color:CanvasText; text-shadow: 0 0 2px Canvas, 0 0 6px Canvas; animation: office-note 1.8s ease-in-out infinite; animation-delay: var(--d, 0s); opacity:0; }
+.office-ding { position:absolute; top:22px; left:50%; transform:translateX(-50%); font-size:11px; font-weight:700; color:#c9302c; padding:1px 8px; border-radius:99px; animation: office-ding 1.4s ease-out forwards; z-index:4; }
+.office-tally { position:absolute; top:14px; left:50%; transform:translateX(-50%); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:99px; z-index:1; }
+.office-butterfly { position:absolute; z-index:6; pointer-events:none; }
+.office-butterfly.is-a { left:30%; top:40%; animation: office-fly-a 16s ease-in-out infinite; }
+.office-butterfly.is-b { left:60%; top:55%; animation: office-fly-b 21s ease-in-out infinite; }
+.office-wing { transform-box: fill-box; transform-origin: 100% 50%; animation: office-flap .28s ease-in-out infinite alternate; }
+.office-wing.is-r { transform-origin: 0% 50%; animation-name: office-flap-r; }
+.office-sweep { position:absolute; inset:0; z-index:2; pointer-events:none; mix-blend-mode:screen; background: radial-gradient(120px 90px at 20% 60%, rgba(255,79,176,.35), transparent 70%), radial-gradient(140px 100px at 70% 40%, rgba(72,224,255,.3), transparent 70%); animation: office-sweep 9s ease-in-out infinite alternate; }
+.office-oven { position:absolute; right:22px; top:34px; z-index:1; }
+.office-oven-fire { transform-box: fill-box; transform-origin: 50% 100%; animation: office-fire .5s ease-in-out infinite alternate; filter: drop-shadow(0 0 4px #ff8a2a); }
+.office-cooler { position:absolute; left:46px; top:42px; z-index:1; }
+.office-bubble { animation: office-bubble 2.4s ease-in infinite; }
+.office-bubble.is-2 { animation-delay: 1.1s; animation-duration: 3s; }
+.office-pendant { position:absolute; left:38%; top:0; margin-left:-15px; z-index:1; transform-origin:50% 0; animation: office-sway 4.5s ease-in-out infinite; }
 .office-header { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; padding:16px 18px 10px; }
 .office-kicker { font-size:10px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ui-text-quaternary); }
 .office-title { margin:2px 0 0; font-size:20px; font-weight:600; color:var(--ui-text-primary, inherit); }
@@ -2834,6 +3442,7 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-hop-row { display:flex; gap:4px; }
 .office-hop { width:30px; height:28px; padding:0; border:2px solid #f6f2e6; border-radius:5px; background:color-mix(in srgb, Canvas 90%, transparent); color:CanvasText; font:inherit; font-size:11px; font-weight:700; cursor:pointer; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 1px 3px rgba(0,0,0,.2); }
 .office-hop:hover { border-color:var(--ui-accent); color:var(--ui-accent); }
+.office-hop.is-lit { background:color-mix(in srgb, var(--ui-accent) 40%, Canvas); border-color:var(--ui-accent); color:CanvasText; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 0 10px color-mix(in srgb, var(--ui-accent) 55%, transparent); transition:background .12s ease, box-shadow .12s ease; }
 .office-room.is-nightclub .office-hop { border-color:#f7a8dc; box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 0 8px rgba(255,79,176,.45); }
 .office-bar { flex:0 0 148px; display:flex; flex-direction:column; align-items:center; padding:6px 10px 18px; z-index:2; }
 .office-bar-sign { font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; padding:2px 9px; border-radius:99px; margin-bottom:8px; }
@@ -2862,6 +3471,9 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-pie { position:relative; margin-top:-16px; z-index:3; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
 .office-slice { position:absolute; top:-2px; left:-12px; z-index:2; transform:rotate(-20deg); filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); animation:office-slice .6s ease-in-out infinite; }
 .office-status.is-sad { color:#c9302c; }
+.office-person.has-pizza .office-face { animation: office-chew .55s ease-in-out infinite; }
+.office-whisper.is-hi { color:var(--ui-accent); font-weight:600; animation: office-hi .3s ease-out 1; }
+@keyframes office-hi { 0% { transform: translateY(4px) scale(.7); opacity:0; } 100% { transform: none; opacity:1; } }
 @keyframes office-slice { 0%,100% { transform:rotate(-20deg) translateY(0); } 50% { transform:rotate(-8deg) translateY(-2px); } }
 .office-game-layer { position:absolute; inset:0; pointer-events:none; z-index:4; }
 .office-game-chair { position:absolute; display:block; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
@@ -2894,10 +3506,23 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-stage .office-person .office-hearts { left:50%; transform:translateX(-50%); }
 .office-person { position:relative; z-index:3; margin-top:4px; display:grid; justify-items:center; gap:4px; cursor:grab; touch-action:none; outline:none; }
 .office-person.is-held { cursor:grabbing; z-index:30; }
-.office-person.is-wander { position:absolute; margin:0; z-index:8; width:42px; will-change:left, top; }
+.office-person.is-wander { position:absolute; margin:0; z-index:8; width:42px; will-change:left, top, transform; transform-origin:50% 100%; }
 .office-person.is-wander .office-status { position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:2px; }
 .office-person.is-wander .office-hearts { left:50%; transform:translateX(-50%); }
 .office-person.is-closer { transform: scale(1.12) translateY(4px); }
+.office-eyes { transform: translate(calc(var(--edx, 0px) + var(--wdx, 0px)), var(--edy, 0px)); transition: transform .12s ease-out; }
+.office-blink { transform-box: fill-box; transform-origin: center; animation: office-blink 4s linear infinite; }
+.office-stage .office-person { animation: office-breathe 3.4s ease-in-out infinite; }
+.office-stage .office-person.is-sleep { animation-duration: 5.6s; }
+.office-stage .office-person.is-closer, .office-stage .office-person.is-held { animation: none; }
+.office-ground { position:absolute; left:50%; bottom:-3px; width:30px; height:9px; margin-left:-15px; border-radius:50%; background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,.36), rgba(0,0,0,0) 70%); transform: scale(calc(1 - var(--lift, 0) * .5)); opacity: calc(1 - var(--lift, 0) * .55); z-index:-1; pointer-events:none; }
+.office-person.is-drop .office-face { animation: office-drop .46s cubic-bezier(.2,.9,.3,1.2) 1; }
+.office-puff-layer { position:absolute; inset:0; pointer-events:none; z-index:7; }
+.office-puff { position:absolute; width:22px; height:10px; margin:-5px 0 0 -11px; border-radius:50%; border:2px solid rgba(255,255,255,.75); box-shadow: 0 0 0 1px rgba(0,0,0,.18), inset 0 0 0 1px rgba(0,0,0,.12); animation: office-puff .5s ease-out forwards; }
+.office-puff:before, .office-puff:after { content:""; position:absolute; top:-2px; width:4px; height:4px; border-radius:99px; background:rgba(255,255,255,.85); box-shadow: 0 0 0 1px rgba(0,0,0,.18); animation: office-puff-dot .5s ease-out forwards; }
+.office-puff:before { left:-4px; --dx:-8px; }
+.office-puff:after { right:-4px; --dx:8px; }
+.office-screen.is-boot { animation: office-boot .7s ease-out 1; }
 .office-face { display:block; transform-origin:50% 80%; pointer-events:none; -webkit-user-drag:none; filter: drop-shadow(0 0 0.6px #fff) drop-shadow(0 0 0.8px #1a1a1a) drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
 .office-face-think { animation:office-think 0.9s ease-in-out infinite; }
 .office-face-shy { animation:office-shy 0.16s ease-in-out infinite; }
@@ -2939,6 +3564,29 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-heart { 0% { opacity:0; transform: translate(-50%, 6px) scale(.6); } 30% { opacity:1; } 100% { opacity:0; transform: translate(calc(-50% + 10px), -18px) scale(1); } }
 @keyframes office-glow { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.35); } }
 @keyframes office-dot { 0%,100% { opacity:.2; } 50% { opacity:1; } }
+@keyframes office-plane { 0% { transform: translate(0, 0) rotate(var(--rot)) scale(.8); opacity:0; } 12% { opacity:1; } 100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scale(.6); opacity:0; } }
+@keyframes office-confetti { 0% { transform: translate(0, 0) rotate(0); opacity:1; } 60% { opacity:1; } 100% { transform: translate(calc(cos(var(--ang)) * 34px), calc(sin(var(--ang)) * 26px + 30px)) rotate(240deg); opacity:0; } }
+@keyframes office-note { 0% { transform: translateY(6px) rotate(-8deg); opacity:0; } 25% { opacity:1; } 100% { transform: translateY(-26px) rotate(10deg); opacity:0; } }
+@keyframes office-ding { 0% { transform: translate(-50%, 8px) scale(.6); opacity:0; } 20% { transform: translate(-50%, 0) scale(1.1); opacity:1; } 70% { opacity:1; } 100% { transform: translate(-50%, -6px); opacity:0; } }
+@keyframes office-fly-a { 0% { transform: translate(0, 0); } 25% { transform: translate(120px, -30px); } 50% { transform: translate(60px, 60px); } 75% { transform: translate(-80px, 20px); } 100% { transform: translate(0, 0); } }
+@keyframes office-fly-b { 0% { transform: translate(0, 0); } 30% { transform: translate(-90px, 40px); } 60% { transform: translate(40px, 80px); } 100% { transform: translate(0, 0); } }
+@keyframes office-flap { from { transform: scaleX(1); } to { transform: scaleX(.35); } }
+@keyframes office-flap-r { from { transform: scaleX(1); } to { transform: scaleX(.35); } }
+@keyframes office-sweep { 0% { transform: translateX(-12%); } 100% { transform: translateX(12%); } }
+@keyframes office-fire { from { transform: scaleY(.85) scaleX(.96); } to { transform: scaleY(1.08) scaleX(1.02); } }
+@keyframes office-bubble { 0% { transform: translateY(0); opacity:.9; } 100% { transform: translateY(-11px); opacity:0; } }
+@keyframes office-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
+@keyframes office-chew { 0%,100% { transform: scaleX(1) rotate(0); } 50% { transform: scaleX(1.06) rotate(-3deg); } }
+@keyframes office-blink { 0%, 94%, 100% { transform: scaleY(1); } 96%, 98% { transform: scaleY(.08); } }
+@keyframes office-breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1.2px); } }
+@keyframes office-drop { 0% { transform: scale(1.22, .78); } 40% { transform: scale(.92, 1.08); } 70% { transform: scale(1.04, .97); } 100% { transform: scale(1, 1); } }
+@keyframes office-puff { 0% { transform: scale(.4); opacity:.9; } 100% { transform: scale(1.5); opacity:0; } }
+@keyframes office-puff-dot { 0% { transform: translate(0, 0); opacity:1; } 100% { transform: translate(var(--dx), -10px); opacity:0; } }
+@keyframes office-boot { 0% { filter: brightness(3) contrast(1.4); } 30% { filter: brightness(.6); } 60% { filter: brightness(2); } 100% { filter: brightness(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .office-stage .office-person, .office-blink, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note { animation: none !important; }
+  .office-eyes { transition: none; }
+}
 `
   let style = document.getElementById('hermes-office-css')
 
@@ -2977,6 +3625,13 @@ const plugin = {
         .then(value => {
           if (value && typeof value.x === 'number' && typeof value.y === 'number') {
             $clockPos.set(value)
+          }
+        })
+        .catch(() => undefined)
+      Promise.resolve(ctx.storage?.get?.('trophies'))
+        .then(value => {
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            $trophies.set(value)
           }
         })
         .catch(() => undefined)
