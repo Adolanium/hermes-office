@@ -10,13 +10,14 @@ Uses the same live data Bot Mode already uses:
 
 - `profiles.list` for the roster
 - `ui_meta.hermes-bots` for names and avatars
-- `host.state.busy` for a real live turn
-- `host.state.profile` so only the focused bot thinks
+- `host.onEvent` plus session IDs for Office task progress and completion
+- `host.state.busy` for the focused chat's separate live-turn indicator
+- `host.requestProfile` for owner-routed background work
 - `host.openSession` / `prompt.submit` into that bot's Bot Chat session
 
 While a bot is working, their monitor lights up and their face rocks.
 
-Give them a task from the bar at the bottom. It goes into the same forever **Bot Chat** Bot Mode already uses, so the history stays one conversation. Click a nameplate to pick who gets it. Double-click, or hit **open chat**, to jump into that same session.
+Give them a task from the bar at the bottom. It goes into the same forever **Bot Chat** Bot Mode already uses, so the history stays one conversation. Click a nameplate to pick who gets it. Double-click, or hit **open chat**, to jump into that same session. Office tracks each accepted task by bot and session; failures keep the prompt for an explicit retry, while an unconfirmed result stays marked unknown instead of being counted as finished.
 
 Cute bits on the floor:
 
@@ -35,7 +36,7 @@ Cute bits on the floor:
 - **chairs** in the header starts musical chairs. Wooden chairs appear in the middle of the floor, music notes float up, and idle bots circle them. When the music stops everyone freezes for a beat, then races in. One is left standing. Bots at their desks watch and clap. Thinking bots keep working.
 - Each room has one small living thing: butterflies in the garden, a light sweep in the nightclub, a wood oven in the parlor, a bubbling water cooler in the office, a swaying pendant lamp in the loft. A tally board on the wall counts tasks finished.
 - A bot with no task for two days gets bored: chin on the desk, half closed eyes, doodling on the screen. A task fixes it.
-- The header names who is thinking (Scout thinking, Scout, Arke +2 thinking). Click it to scroll to that desk.
+- The header names who is working on an Office task (Scout working, Scout, Arke +2 working). Click it to scroll to that desk. Work in the focused chat outside Office is labeled separately and never awards Office trophies.
 - Steady labels like here, at desk, exploring fade out after a moment so a busy floor stays calm. Hover a bot to see them again. Thinking, bored, zzz, games and results stay.
 - On the hour, idle bots at their desks look up and take a short break. If you missed it, click the clock within ten minutes of the hour and they do it again.
 - Employee of the month. A gold framed portrait on the wall of the bot with the most finished tasks this month, with a brass plate and their name. Ties keep the current holder, you have to pass them. Resets on the first.
@@ -57,7 +58,7 @@ copy this folder to:
 
 The folder name must be `hermes-office`. Then Ctrl+K → Reload desktop plugins.
 
-You need a Desktop build that has `host.state.busy` (the SDK change on main). Older builds still load. Faces just stay idle.
+Use a current Desktop build with owner-routed `host.requestProfile`, `host.onEvent`, and `host.openSession`. Older builds can still load the floor, but Office fails closed when it cannot prove which profile owns a background request.
 
 Bot Mode does not have to be on, but avatars look right when Bot Mode has already saved looks on the profile.
 

@@ -1,7 +1,7 @@
 /**
  * Hermes Office — a floor of desks for every Bot Mode agent.
  *
- * Same data as Bot Mode: profiles.list, ui_meta hermes-bots, host.state.busy.
+ * Same data as Bot Mode: profiles.list, ui_meta hermes-bots, routed session events.
  * Click a nameplate to give them a task. That task lands in the same
  * Bot Chat session Bot Mode already uses. Hover, pet, and drag the face.
  */
@@ -51,6 +51,12 @@ const $month = atom(null)
 const $hint = atom('off')
 const $news = atom({})
 const $ritual = atom({ hour: -1, at: 0 })
+const JOBS_STORAGE_KEY = 'jobs'
+const JOBS_SCHEMA_VERSION = 1
+const JOB_STATES = Object.freeze({ SUBMITTING: 'submitting', RUNNING: 'running', COMPLETED: 'completed', FAILED: 'failed', UNKNOWN: 'unknown' })
+const TASK_PROMPT_MAX = 4000
+let jobSequence = 0
+let openSequence = 0
 const RITUAL_MS = 2800
 const RITUAL_WINDOW_MS = 10 * 60 * 1000
 const $petPing = atom({})
@@ -74,7 +80,7 @@ function flyPlane(from, to) {
 // One more finished task on the shelf for this bot. Kept locally for speed and
 // mirrored onto the bot's profile (ui_meta, our own namespace) so the count
 // follows the profile rather than this machine.
-function addTrophy(name) {
+function addTrophy(name, route = null) {
   const count = ($trophies.get()[name] || 0) + 1
   const next = { ...$trophies.get(), [name]: count }
   $trophies.set(next)
@@ -82,7 +88,7 @@ function addTrophy(name) {
 
   try {
     Promise.resolve(
-      host.request('profiles.configure', { name, ui_meta: { [OFFICE_NS]: { stars: count } } })
+      requestForBot({ name, route }, 'profiles.configure', { name, ui_meta: { [OFFICE_NS]: { stars: count } } })
     ).catch(() => undefined)
   } catch {
     /* older gateway */
@@ -154,9 +160,9 @@ function bumpWeek(key, name) {
 }
 
 // Job done: confetti at the desk, a trophy, then off to the bar.
-// Two paths can see the same completion (the job poller and the focused
-// busy edge). Each round gets a token in startRound; a round celebrates once.
-function celebrate(name) {
+// The event stream and recovery poll can see the same completion. Each round
+// gets a token in startRound, so those two paths can celebrate it only once.
+function celebrate(name, route = null) {
   const now = Date.now()
   const row = $fx.get()[name] || {}
   const round = completionToken(row)
@@ -165,7 +171,7 @@ function celebrate(name) {
   }
 
   patchFx(name, { doneRound: round, clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
-  addTrophy(name)
+  addTrophy(name, route)
   bumpWeek('tasks', name)
   bumpMonth(name)
   leaveNote(name, now)
@@ -424,6 +430,7 @@ function skinCss(name, skin) {
 }
 
 const BOT_CHAT_TITLE = 'Bot Chat'
+const focusedProfileState = host.state?.focusedSessionProfile || host.state.profile
 const chatCreates = new Map()
 const jobPollers = new Map()
 let pluginCtx = null
@@ -662,6 +669,86 @@ function completionToken(row) {
   return row?.doneRound === round ? null : round
 }
 
+// Pure task state transitions. Unknown terminal evidence is deliberately not
+// treated as success. Completed and failed jobs are immutable: delayed frames
+// from the same turn cannot reverse their terminal result.
+function taskTransition(job, event) {
+  if (!job || !event || (event.id && event.id !== job.id)) {
+    return job
+  }
+  const terminal = job.state === JOB_STATES.COMPLETED || job.state === JOB_STATES.FAILED
+  if (terminal) {
+    return job
+  }
+  if (event.type === 'accepted') {
+    return { ...job, state: JOB_STATES.RUNNING, acceptedAt: event.at || job.acceptedAt || Date.now() }
+  }
+  if (event.type === 'started') {
+    return { ...job, state: JOB_STATES.RUNNING, startedAt: event.at || job.startedAt || Date.now() }
+  }
+  if (event.type === 'resumed' && event.runtimeSessionId) {
+    return { ...job, runtimeSessionId: event.runtimeSessionId }
+  }
+  if (event.type === 'completed') {
+    return { ...job, state: JOB_STATES.COMPLETED, completedAt: event.at || Date.now(), error: null }
+  }
+  if (event.type === 'failed') {
+    return { ...job, state: JOB_STATES.FAILED, completedAt: event.at || Date.now(), error: String(event.error || 'The task failed.') }
+  }
+  if (event.type === 'unknown') {
+    return { ...job, state: JOB_STATES.UNKNOWN, error: String(event.error || 'The task status could not be confirmed.') }
+  }
+  return job
+}
+
+function jobIsActive(row) {
+  // Keep this helper independent so pure movement tests can extract it from
+  // the single-file runtime without booting the SDK.
+  return Boolean(row && (row.state === 'submitting' || row.state === 'running' || typeof row.t0 === 'number'))
+}
+
+function jobAllowsSubmission(row) {
+  return !jobIsActive(row)
+}
+
+function normalizeJobs(value) {
+  if (!value || value.version !== JOBS_SCHEMA_VERSION) {
+    return {}
+  }
+  const records = typeof value === 'object' && !Array.isArray(value) ? value.records : null
+  if (!records || typeof records !== 'object' || Array.isArray(records)) {
+    return {}
+  }
+  const next = {}
+  for (const [name, row] of Object.entries(records)) {
+    if (!name.trim() || !row || typeof row !== 'object' || !row.id || !row.storedSessionId || !row.profile) continue
+    const state = Object.values(JOB_STATES).includes(row.state) ? row.state : JOB_STATES.UNKNOWN
+    const route = row.route && typeof row.route.connectionId === 'string' && typeof row.route.profile === 'string'
+      ? {
+          connectionId: row.route.connectionId,
+          mode: row.route.mode === 'local' ? 'local' : 'remote',
+          profile: row.route.profile,
+          targetProfile: typeof row.route.targetProfile === 'string' && row.route.targetProfile ? row.route.targetProfile : row.route.profile
+        }
+      : null
+    next[name] = {
+      ...row,
+      id: String(row.id),
+      profile: String(row.profile),
+      connectionId: route?.connectionId || null,
+      targetProfile: route?.targetProfile || String(row.targetProfile || row.profile),
+      route,
+      storedSessionId: String(row.storedSessionId),
+      runtimeSessionId: row.runtimeSessionId ? String(row.runtimeSessionId) : null,
+      submittedAt: Number.isFinite(row.submittedAt) ? row.submittedAt : Date.now(),
+      state,
+      prompt: String(row.prompt || '').slice(0, TASK_PROMPT_MAX),
+      effectsApplied: Boolean(row.effectsApplied)
+    }
+  }
+  return next
+}
+
 // A bot that has had no task for days, and is idle at its desk, is bored.
 function isBored(lastTaskAt, now, thresholdMs = BORED_MS_SLICE) {
   if (!lastTaskAt) {
@@ -793,9 +880,105 @@ function resolvePicked(roster, selected, activeProfile) {
 
 function savePref(key, value) {
   try {
-    Promise.resolve(pluginCtx?.storage?.set?.(key, value)).catch(() => undefined)
+    // PluginStorage is synchronous. Keeping this write synchronous means a
+    // preference changed immediately after registration cannot be overwritten
+    // by a late hydration callback.
+    pluginCtx?.storage?.set?.(key, value)
   } catch {
     /* no storage */
+  }
+}
+
+// ── routed bot SDK seam ─────────────────────────────────────────────────────
+// Session RPCs must follow the selected bot's owner, not the focused chat.
+// Routes are optional on older single-gateway hosts; in that topology the
+// profile-only requestProfile overload remains the safe compatibility path.
+const botRouteCache = new Map()
+
+function pickBotRoute(routes, name, connectionId) {
+  const candidates = (Array.isArray(routes) ? routes : []).filter(
+    row => row && (row.profile === name || row.targetProfile === name)
+  )
+  if (connectionId) {
+    const owned = candidates.filter(row => row.connectionId === connectionId)
+    if (owned.length === 1) return owned[0]
+    if (owned.length > 1) throw new Error(`Bot ${name} has more than one route on ${connectionId}`)
+    return null
+  }
+  if (candidates.length === 1) return candidates[0]
+  if (candidates.length > 1) throw new Error(`Bot ${name} has more than one connection owner`)
+  return null
+}
+
+async function botOwnerRoute(bot) {
+  const name = String(bot?.name || '').trim()
+  if (!name) return null
+  if (bot?.route?.connectionId && bot.route.profile) return bot.route
+  const connectionId = String(
+    bot?.connectionId || host.state?.connectionId?.get?.() || host.activeConnectionId?.() || ''
+  ).trim()
+  const cacheKey = `${connectionId || 'legacy'}::${name}`
+  if (botRouteCache.has(cacheKey)) return botRouteCache.get(cacheKey)
+  if (typeof host.profileRoutes !== 'function') return null
+
+  let routes
+  try {
+    routes = await host.profileRoutes()
+  } catch (error) {
+    throw new Error(`Could not resolve ${name}'s connection owner: ${String(error?.message || error)}`)
+  }
+  const route = pickBotRoute(routes, name, connectionId)
+  if (!route && Array.isArray(routes) && routes.length) {
+    throw new Error(`Could not resolve ${name}'s connection owner`)
+  }
+  if (route) botRouteCache.set(cacheKey, route)
+  return route
+}
+
+async function requestForBot(bot, method, params = {}) {
+  const name = String(bot?.name || '').trim()
+  if (!name) throw new Error(`Cannot route ${method}: bot name is missing`)
+  const route = await botOwnerRoute(bot)
+  const payload = { ...params }
+  if (route?.targetProfile && Object.prototype.hasOwnProperty.call(payload, 'profile')) {
+    payload.profile = route.targetProfile
+  }
+  if (route?.targetProfile && method.startsWith('profiles.') && method !== 'profiles.create' && payload.name === name) {
+    payload.name = route.targetProfile
+  }
+  if (route && typeof host.requestProfile === 'function') {
+    try {
+      return await host.requestProfile(route, method, payload)
+    } catch (error) {
+      // A connection can be removed or remapped while the Office is open.
+      // Forget cached ownership for the next user action, but never retry an
+      // in-flight mutation such as prompt.submit automatically.
+      botRouteCache.clear()
+      throw error
+    }
+  }
+  if (typeof host.requestProfile === 'function' && typeof host.profileRoutes !== 'function') {
+    // Legacy sole-local overload. Registry-aware hosts must resolve an exact
+    // descriptor above; profile names alone are ambiguous across sources.
+    return host.requestProfile(name, method, payload)
+  }
+  const active = String(host.state?.profile?.get?.() || '').trim()
+  if (active && active !== name) {
+    throw new Error(`Cannot route ${method} for ${name}: this Desktop has no owner-scoped request API`)
+  }
+  return host.request(method, { ...payload, profile: name })
+}
+
+async function withBotLease(bot, run) {
+  const route = await botOwnerRoute(bot)
+  let release = () => undefined
+  if (route && typeof host.retainProfile === 'function') {
+    release = await host.retainProfile(route)
+  }
+  try {
+    return await run(route)
+  } finally {
+    release()
   }
 }
 
@@ -851,7 +1034,7 @@ function idleBotNames(roster, jobs, activeProfile, turnBusy) {
         deskMood({
           isActive: bot.name === activeProfile,
           turnBusy,
-          tasked: Boolean(jobs && jobs[bot.name])
+          tasked: jobIsActive(jobs && jobs[bot.name])
         }) === 'idle'
     )
     .map(bot => bot.name)
@@ -1160,9 +1343,10 @@ function tickRoam(now, roomEl, opts = {}) {
   let roamDirty = false
   const scramble = opts.scramble || false
   const only = opts.only ? new Set(opts.only) : null
+  const rosterNames = opts.rosterNames ? new Set(opts.rosterNames) : null
 
   for (const name of Object.keys(seats)) {
-    if (only && !only.has(name)) {
+    if ((rosterNames && !rosterNames.has(name)) || (only && !only.has(name))) {
       continue
     }
 
@@ -1170,7 +1354,7 @@ function tickRoam(now, roomEl, opts = {}) {
       continue
     }
 
-    if (!scramble && (jobs[name] || players.has(name))) {
+    if (!scramble && (jobIsActive(jobs[name]) || players.has(name))) {
       continue
     }
 
@@ -1199,7 +1383,7 @@ function tickRoam(now, roomEl, opts = {}) {
   }
 
   for (const name of Object.keys(nextRoam)) {
-    if (!nextSeats[name] && drag?.name !== name) {
+    if ((rosterNames && !rosterNames.has(name)) || (!nextSeats[name] && drag?.name !== name)) {
       delete nextRoam[name]
       roamDirty = true
     }
@@ -1314,7 +1498,7 @@ function saveChatPin(bot, chat) {
 
   try {
     Promise.resolve(
-      host.request('profiles.configure', { name: bot.name, ui_meta: { [META_NS]: rest } })
+      requestForBot(bot, 'profiles.configure', { name: bot.name, ui_meta: { [META_NS]: rest } })
     ).catch(() => undefined)
   } catch {
     /* older gateway */
@@ -1322,7 +1506,7 @@ function saveChatPin(bot, chat) {
 }
 
 async function resumeBotChat(bot, id) {
-  const res = await host.request('session.resume', {
+  const res = await requestForBot(bot, 'session.resume', {
     session_id: id,
     profile: bot.name,
     omit_messages: true
@@ -1339,166 +1523,243 @@ async function resumeBotChat(bot, id) {
 }
 
 async function createBotChat(bot) {
-  const res = await host.request('session.create', {
+  const res = await requestForBot(bot, 'session.create', {
     profile: bot.name,
-    title: BOT_CHAT_TITLE
+    title: BOT_CHAT_TITLE,
+    hidden: true,
+    follow_profile_config: true
   })
   const stored = res?.stored_session_id || null
   const runtime = res?.session_id || null
 
-  if (stored) {
-    saveChatPin(bot, stored)
+  if (runtime) {
+    try {
+      await requestForBot(bot, 'session.title', { session_id: runtime, title: BOT_CHAT_TITLE })
+    } catch (error) {
+      // Older gateways may not expose eager titling. The first accepted prompt
+      // still materializes the requested title; never hide a real create error.
+      if (!/method not found|unknown method|unsupported/i.test(String(error?.message || error))) throw error
+    }
   }
-
+  if (stored) saveChatPin(bot, stored)
   return { runtime, stored, created: true }
 }
 
-function ensureBotChat(bot) {
+async function ensureBotChat(bot) {
   const name = bot.name
   const inflight = chatCreates.get(name)
-
-  if (inflight) {
-    return inflight
-  }
+  if (inflight) return inflight
 
   const run = (async () => {
     const pinned = botMeta(bot).chat
+    const canonical = bot.canonical_session
+    // The roster's canonical_session is server-resolved identity. Compression
+    // tips are the runtime-open target while the root remains the registry id.
+    if (canonical?.id) {
+      const live = await resumeBotChat(bot, canonical.resolved_id || canonical.id)
+      if (live) return { ...live, created: false }
+    }
+    // A legacy pin is only a hint; it never authorizes a chat by itself. The
+    // exact hidden title lookup below is the source of truth.
 
-    if (pinned) {
-      try {
-        const live = await resumeBotChat(bot, pinned)
-
-        if (live) {
-          return { ...live, created: false }
-        }
-      } catch {
-        /* pin is stale */
-      }
+    let listed
+    try {
+      listed = await requestForBot(bot, 'session.list', {
+        profile: bot.name,
+        title: BOT_CHAT_TITLE,
+        include_hidden: true,
+        limit: 100
+      })
+    } catch (error) {
+      // Never interpret an unavailable registry as an absent Bot Chat.
+      throw new Error(`Could not check ${name}'s Bot Chat registry: ${String(error?.message || error)}`)
     }
 
-    try {
-      const listed = await host.request('session.list', { profile: name, limit: 100 })
-      const id = pickBotChatRow(listed?.sessions, pinned)
-
-      if (id) {
-        if (id !== pinned) {
-          saveChatPin(bot, id)
-        }
-
-        const live = await resumeBotChat(bot, id)
-
-        if (live) {
-          return { ...live, created: false }
-        }
-      }
-    } catch {
-      /* list failed */
+    const rows = Array.isArray(listed?.sessions) ? listed.sessions : []
+    const titled = rows.find(row => (row?.title || '').trim() === BOT_CHAT_TITLE)
+    const id = titled?.resolved_id || titled?.id || null
+    if (id) {
+      if (titled.id && titled.id !== pinned) saveChatPin(bot, titled.id)
+      const live = await resumeBotChat(bot, id)
+      if (live) return { ...live, created: false }
     }
 
     return createBotChat(bot)
   })().finally(() => chatCreates.delete(name))
-
   chatCreates.set(name, run)
   return run
 }
 
-function markJob(name, chat) {
-  $jobs.set({ ...$jobs.get(), [name]: { ...chat, t0: Date.now() } })
+function saveJobs(records = $jobs.get()) {
+  savePref(JOBS_STORAGE_KEY, { version: JOBS_SCHEMA_VERSION, records })
 }
 
-function clearJob(name) {
+function currentJob(name, id) {
+  const row = $jobs.get()[name]
+  return row && (!id || row.id === id) ? row : null
+}
+
+function updateJob(name, id, event) {
+  const current = currentJob(name, id)
+  if (!current) return null
+  const next = taskTransition(current, event)
+  if (next === current) return current
+  $jobs.set({ ...$jobs.get(), [name]: next })
+  saveJobs()
+  return next
+}
+
+function markJob(bot, chat, prompt, route) {
+  const name = bot.name
+  const id = `office-${Date.now()}-${++jobSequence}`
+  const row = {
+    id,
+    generation: jobSequence,
+    profile: name,
+    connectionId: route?.connectionId || bot.connectionId || null,
+    targetProfile: route?.targetProfile || route?.profile || name,
+    route: route || null,
+    storedSessionId: chat.stored || null,
+    runtimeSessionId: chat.runtime || null,
+    prompt: String(prompt || '').slice(0, TASK_PROMPT_MAX),
+    submittedAt: Date.now(),
+    state: JOB_STATES.SUBMITTING,
+    error: null,
+    effectsApplied: false,
+    round: id
+  }
+  $jobs.set({ ...$jobs.get(), [name]: row })
+  return row
+}
+
+function clearJob(name, id) {
+  const current = currentJob(name, id)
+  if (!current) return
   const next = { ...$jobs.get() }
   delete next[name]
   $jobs.set(next)
+  saveJobs(next)
   const timer = jobPollers.get(name)
-
-  if (timer) {
-    clearInterval(timer)
+  if (timer && (!id || timer.id === id)) {
+    clearInterval(timer.timer || timer)
     jobPollers.delete(name)
   }
 }
 
-function watchJob(name, chat) {
-  if (jobPollers.has(name)) {
-    return
+function finishJob(name, id, event) {
+  const row = updateJob(name, id, event)
+  if (!row || row.state !== JOB_STATES.COMPLETED || row.effectsApplied) return
+  const next = { ...row, effectsApplied: true }
+  $jobs.set({ ...$jobs.get(), [name]: next })
+  saveJobs()
+  const poll = jobPollers.get(name)
+  if (poll?.id === id) {
+    clearInterval(poll.timer)
+    jobPollers.delete(name)
   }
+  celebrate(name, row.route)
+}
 
-  const started = Date.now()
+function handleJobEvent(event) {
+  const sid = event?.session_id
+  if (!sid) return
+  for (const [name, row] of Object.entries($jobs.get())) {
+    if (row.runtimeSessionId !== sid) continue
+    if (row.connectionId && event.connectionId && row.connectionId !== event.connectionId) continue
+    if (row.targetProfile && event.profile && row.targetProfile !== event.profile) continue
+    if (event.type === 'message.start') {
+      updateJob(name, row.id, { type: 'started' })
+    } else if (event.type === 'message.complete') {
+      const failure = event.payload?.status === 'error'
+      if (failure) {
+        updateJob(name, row.id, { type: 'failed', error: event.payload?.error || 'The task failed.' })
+        const poll = jobPollers.get(name)
+        if (poll?.id === row.id) {
+          clearInterval(poll.timer)
+          jobPollers.delete(name)
+        }
+      } else finishJob(name, row.id, { type: 'completed' })
+    }
+  }
+}
+
+function watchJob(name, id) {
+  if (jobPollers.has(name)) return
   const timer = setInterval(async () => {
-    if (Date.now() - started > 10 * 60 * 1000) {
-      clearJob(name)
+    const row = currentJob(name, id)
+    if (!row) return
+    const age = Date.now() - (row.submittedAt || Date.now())
+    if (age > 10 * 60 * 1000) {
+      updateJob(name, id, { type: 'unknown', error: 'The task is still unresolved after ten minutes.' })
+      clearInterval(timer)
+      jobPollers.delete(name)
       return
     }
-
-    if (Date.now() - started < 1200) {
-      return
-    }
-
+    if (age < 1200) return
     try {
-      const state = await host.request('session.resume', {
-        session_id: chat.stored || chat.runtime,
+      const state = await requestForBot({ name, route: row.route, connectionId: row.connectionId }, 'session.resume', {
+        session_id: row.storedSessionId || row.runtimeSessionId,
         profile: name,
         omit_messages: true
       })
-
-      if (!state?.inflight && !state?.running) {
-        clearJob(name)
-        celebrate(name)
+      if (currentJob(name, id) !== row) return
+      if (state?.session_id && state.session_id !== row.runtimeSessionId) {
+        updateJob(name, id, { type: 'resumed', runtimeSessionId: state.session_id })
       }
-    } catch {
-      /* keep waiting */
-    }
+      if (state?.inflight?.error) {
+        updateJob(name, id, { type: 'failed', error: state.inflight.error })
+        clearInterval(timer)
+        jobPollers.delete(name)
+      } else if (state?.running === true || state?.inflight) {
+        updateJob(name, id, { type: 'started' })
+      } else if (state && state.running === false && state.status === 'idle') {
+        // Current gateways expose this pair only for a settled turn. Older or
+        // partial response shapes remain unresolved instead of earning effects.
+        finishJob(name, id, { type: 'completed' })
+      }
+    } catch { /* event stream or next poll can recover */ }
   }, 1600)
-
-  jobPollers.set(name, timer)
+  jobPollers.set(name, { id, timer })
 }
 
 async function openBot(bot) {
   tap()
-  readNote(bot.name)
-
+  const openId = ++openSequence
   try {
-    const chat = await ensureBotChat(bot)
-    const id = chat?.stored
-
-    if (id && typeof host.openSession === 'function') {
-      await host.openSession(id, { profile: bot.name })
-      return
-    }
-  } catch {
-    /* fall through */
-  }
-
-  if (typeof host.newChat === 'function') {
-    host.newChat(bot.name)
+    return await withBotLease(bot, async route => {
+      const chat = await ensureBotChat(bot)
+      const id = chat?.stored
+      if (!id || typeof host.openSession !== 'function') throw new Error('This Hermes Desktop cannot open stored Bot Chats')
+      if (openId !== openSequence) return false
+      await host.openSession(id, { profile: bot.name, ...(route ? { route } : {}) })
+      if (openId === openSequence) readNote(bot.name)
+      return true
+    })
+  } catch (error) {
+    try { host.notifyError(error, `Could not open ${botLook(bot).title}'s Bot Chat`) } catch { /* older shell */ }
+    return false
   }
 }
 
 async function sendTask(bot, text) {
   const task = (text || '').trim()
-
-  if (!task) {
-    return
-  }
-
-  const chat = await ensureBotChat(bot)
-
-  if (!chat?.runtime) {
-    throw new Error('Could not open that bot chat')
-  }
-
-  markJob(bot.name, chat)
-  startRound(bot.name)
-
-  try {
-    await host.request('prompt.submit', { session_id: chat.runtime, text: task })
-  } catch (err) {
-    clearJob(bot.name)
-    patchFx(bot.name, { goHome: false })
-    throw err
-  }
-
-  watchJob(bot.name, chat)
+  if (!task || !jobAllowsSubmission(currentJob(bot.name))) return false
+  return withBotLease(bot, async route => {
+    const chat = await ensureBotChat(bot)
+    if (!chat?.runtime) throw new Error('Could not open that bot chat')
+    const row = markJob(bot, chat, task, route)
+    try {
+      await requestForBot(bot, 'prompt.submit', { session_id: chat.runtime, text: task })
+      updateJob(bot.name, row.id, { type: 'accepted' })
+      startRound(bot.name, row.id)
+    } catch (error) {
+      updateJob(bot.name, row.id, { type: 'failed', error: error?.message || 'Could not send the task.' })
+      patchFx(bot.name, { goHome: false })
+      throw error
+    }
+    watchJob(bot.name, row.id)
+    return true
+  })
 }
 
 function dropBot(name, next, roomEl) {
@@ -1755,9 +2016,9 @@ function startHopscotch(name, roomEl) {
 }
 
 // Someone got a task: they walk home, and a fresh pizza lands on the counter.
-function startRound(name) {
+function startRound(name, roundToken = null) {
   const now = Date.now()
-  patchFx(name, { round: now, nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700, askUntil: now + 1400 })
+  patchFx(name, { round: roundToken || `${now}-${++jobSequence}`, nap: false, goHome: true, goBar: false, atBar: false, lingerUntil: 0, pizzaUntil: 0, noPizzaUntil: 0, thinkSince: now, bootUntil: now + 700, askUntil: now + 1400 })
   const last = { ...$lastTask.get(), [name]: now }
   $lastTask.set(last)
   savePref('lastTask', last)
@@ -1806,7 +2067,7 @@ function finishWalk(name, walk) {
 const hiSeen = new Map()
 let hiTick = 0
 
-function tickHellos(now, roomEl) {
+function tickHellos(now, roomEl, allowedNames = null) {
   if (!roomEl || now - hiTick < 160) {
     return
   }
@@ -1814,13 +2075,14 @@ function tickHellos(now, roomEl) {
   hiTick = now
   const walks = $walks.get()
   const roam = $roam.get()
-  const names = Object.keys($seats.get()).filter(name => walks[name] || roam[name])
+  const allowed = allowedNames ? new Set(allowedNames) : null
+  const names = Object.keys($seats.get()).filter(name => (!allowed || allowed.has(name)) && (walks[name] || roam[name]))
   if (names.length < 2) {
     return
   }
 
   const spots = names.map(name => ({ name, pos: currentPos(name, roomEl, now) })).filter(x => x.pos)
-  const others = Object.keys($seats.get()).filter(name => !walks[name] && !roam[name]).map(name => ({ name, pos: $seats.get()[name] }))
+  const others = Object.keys($seats.get()).filter(name => (!allowed || allowed.has(name)) && !walks[name] && !roam[name]).map(name => ({ name, pos: $seats.get()[name] }))
 
   for (const a of spots) {
     for (const b of [...spots, ...others]) {
@@ -1992,7 +2254,7 @@ function startMusicalChairs(roster, jobs, activeProfile, turnBusy, roomEl) {
     return false
   }
 
-  const watchers = roster.map(bot => bot.name).filter(name => !players.includes(name) && !jobs[name])
+  const watchers = roster.map(bot => bot.name).filter(name => !players.includes(name) && !jobIsActive(jobs[name]))
 
   const seats = { ...$seats.get() }
 
@@ -2228,7 +2490,9 @@ function WorkerFace({ color, image, mood, size = 36, name, sad = false }) {
   }, name)
 }
 
-function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual }) {
+function statusText({ face, isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual, taskState }) {
+  if (taskState === 'failed') return 'failed'
+  if (taskState === 'unknown') return 'status?'
   if (face === 'sleep') {
     return 'zzz'
   }
@@ -2345,8 +2609,8 @@ function PizzaSlice({ className }) {
   })
 }
 
-function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, ritual, style, onPetStart }) {
-  const status = statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual })
+function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, ritual, taskState, style, onPetStart }) {
+  const status = statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual, taskState })
   return jsxs('div', {
     className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop', ritual && 'is-lookup'),
     style,
@@ -2389,6 +2653,7 @@ function usePersonHandlers(bot, roomRef, held) {
   const petTimer = useRef(null)
   const startRef = useRef(null)
   const sleepRef = useRef(null)
+  const teardownRef = useRef(null)
 
   const burstPet = () => {
     const now = Date.now()
@@ -2402,6 +2667,9 @@ function usePersonHandlers(bot, roomRef, held) {
   }
 
   useEffect(() => () => {
+    teardownRef.current?.()
+    startRef.current = null
+    if ($drag.get()?.name === bot.name) $drag.set(null)
     clearTimeout(petTimer.current)
     clearTimeout(sleepRef.current)
   }, [])
@@ -2427,6 +2695,8 @@ function usePersonHandlers(bot, roomRef, held) {
 
         event.preventDefault()
         event.stopPropagation()
+        teardownRef.current?.()
+        try { event.currentTarget?.setPointerCapture?.(event.pointerId) } catch { /* older browser */ }
         startRef.current = { x: event.clientX, y: event.clientY }
         clearTimeout(sleepRef.current)
         sleepRef.current = setTimeout(() => {
@@ -2452,9 +2722,22 @@ function usePersonHandlers(bot, roomRef, held) {
           $drag.set({ name: bot.name, x: next.x, y: next.y, asleep })
         }
 
-        const up = ev => {
+        const cleanup = () => {
           window.removeEventListener('pointermove', move)
           window.removeEventListener('pointerup', up)
+          window.removeEventListener('pointercancel', cancel)
+          window.removeEventListener('blur', cancel)
+          teardownRef.current = null
+        }
+        const cancel = () => {
+          cleanup()
+          clearTimeout(sleepRef.current)
+          startRef.current = null
+          if ($drag.get()?.name === bot.name) $drag.set(null)
+          patchFx(bot.name, { nap: false })
+        }
+        const up = ev => {
+          cleanup()
           clearTimeout(sleepRef.current)
           const start = startRef.current
           startRef.current = null
@@ -2476,14 +2759,17 @@ function usePersonHandlers(bot, roomRef, held) {
           setShy(false)
         }
 
+        teardownRef.current = cleanup
         window.addEventListener('pointermove', move)
         window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', cancel)
+        window.addEventListener('blur', cancel)
       }
     }
   }
 }
 
-function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, now, onPick, onOpen }) {
+function Desk({ bot, isActive, turnBusy, tasked, taskState, picked, roomRef, night, peek, now, onPick, onOpen }) {
   const look = botLook(bot)
   const think = deskMood({ isActive, turnBusy, tasked }) === 'think'
   const handle = botHandle(bot.name)
@@ -2591,6 +2877,7 @@ function Desk({ bot, isActive, turnBusy, tasked, picked, roomRef, night, peek, n
                     yawn: fx.yawn,
                     ritual: fx.ritual,
                     style: watchDx ? { '--wdx': watchDx } : undefined,
+                    taskState,
                     onPetStart: { ...handlers, isActive }
                   })
             ]
@@ -2680,7 +2967,7 @@ function Monitor({ on, text, since, now, boot, doodle }) {
   })
 }
 
-function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seats, walk, roam, game }) {
+function WandererBot({ bot, isActive, turnBusy, tasked, taskState, roomRef, now, drag, seats, walk, roam, game }) {
   const look = botLook(bot)
   const think = deskMood({ isActive, turnBusy, tasked }) === 'think'
   const held = drag?.name === bot.name
@@ -2750,6 +3037,7 @@ function WandererBot({ bot, isActive, turnBusy, tasked, roomRef, now, drag, seat
     five: fx.five,
     gamePhase: game?.players?.includes(bot.name) ? game.phase : null,
     leftover: game?.leftover === bot.name,
+    taskState,
     style: {
       left: seat.x,
       top: seat.y,
@@ -2775,8 +3063,8 @@ function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
     flushGoFlags(roomRef.current)
     tickWalks(now)
     tickGame(now, roomRef.current, jobs)
-    tickHellos(now, roomRef.current)
-  }, [now, jobs, roomRef])
+    tickHellos(now, roomRef.current, roster.map(bot => bot.name))
+  }, [now, jobs, roomRef, roster])
 
   return jsx('div', {
     className: 'office-wander-layer',
@@ -2789,7 +3077,8 @@ function Wanderers({ roster, isActiveName, turnBusy, jobs, roomRef }) {
             bot,
             isActive: bot.name === isActiveName,
             turnBusy,
-            tasked: Boolean(jobs[bot.name]),
+            tasked: jobIsActive(jobs[bot.name]),
+            taskState: jobs[bot.name]?.state,
             roomRef,
             now,
             drag,
@@ -3307,8 +3596,9 @@ function Ambience({ backdrop, tally, sky, roster, trophies }) {
 // doing any of the things it mentions, puts it away for good.
 // Onboarding in two moments. First: give someone a task (points at the task
 // bar). After the first result comes back: pet them, and try one game.
-function HintBubble({ roster, stage, onClose }) {
-  const first = roster[0] ? botLook(roster[0]).title : 'a bot'
+function HintBubble({ roster, stage, onClose, selectedName }) {
+  const target = roster.find(row => row.name === selectedName) || roster[0]
+  const first = target ? botLook(target).title : 'a bot'
   const copy = stage === 'task'
     ? [jsx('b', { children: `Give ${first} something small.` }, 'b'), ' Type it in the bar below and press Send. Watch the desk.']
     : [jsx('b', { children: `${first} is back. Try petting them.` }, 'b'), ' Hover to startle, tap to pet, hold to send to sleep, drag to move. Then tap a hop square or press chairs.']
@@ -3368,9 +3658,12 @@ function OfficeProps({ now, roomRef, onReplay }) {
   const clockKind = useValue($clockKind)
   const clockPos = useValue($clockPos)
   const dragged = useRef(false)
+  const teardownRef = useRef(null)
   const stamp = new Date(now)
   const label = clockLabel(stamp)
   const hands = clockHands(stamp)
+
+  useEffect(() => () => teardownRef.current?.(), [])
 
   const onClockDown = event => {
     if (event.button !== 0) {
@@ -3378,6 +3671,8 @@ function OfficeProps({ now, roomRef, onReplay }) {
     }
 
     event.stopPropagation()
+    teardownRef.current?.()
+    try { event.currentTarget?.setPointerCapture?.(event.pointerId) } catch { /* older browser */ }
     const start = { x: event.clientX, y: event.clientY }
     dragged.current = false
 
@@ -3390,9 +3685,19 @@ function OfficeProps({ now, roomRef, onReplay }) {
       $clockPos.set(pointOnWall(roomRef.current, ev.clientX, ev.clientY))
     }
 
-    const up = ev => {
+    const cleanup = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('blur', cancel)
+      teardownRef.current = null
+    }
+    const cancel = () => {
+      cleanup()
+      dragged.current = false
+    }
+    const up = ev => {
+      cleanup()
 
       if (!dragged.current) {
         return
@@ -3403,8 +3708,11 @@ function OfficeProps({ now, roomRef, onReplay }) {
       savePref('clockPos', next)
     }
 
+    teardownRef.current = cleanup
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
   }
 
   const onClock = event => {
@@ -3567,7 +3875,9 @@ function TaskBar({ roster, activeProfile }) {
   const picked = resolvePicked(roster, selected, activeProfile)
   const bot = roster.find(row => row.name === picked) || null
   const look = bot ? botLook(bot) : null
-  const sending = Boolean(bot && jobs[bot.name])
+  const job = bot ? jobs[bot.name] : null
+  const sending = Boolean(job && (job.state === JOB_STATES.SUBMITTING || job.state === JOB_STATES.RUNNING))
+  const unknown = Boolean(job?.state === JOB_STATES.UNKNOWN)
 
   useEffect(() => {
     if (!focusToken || !inputRef.current) {
@@ -3577,6 +3887,12 @@ function TaskBar({ roster, activeProfile }) {
     inputRef.current.focus()
     inputRef.current.select?.()
   }, [focusToken])
+
+  useEffect(() => {
+    if (job?.state === JOB_STATES.FAILED && !text.trim() && job.prompt) {
+      setText(job.prompt)
+    }
+  }, [job?.id, job?.state])
 
   if (!bot || !look) {
     return null
@@ -3589,25 +3905,16 @@ function TaskBar({ roster, activeProfile }) {
       return
     }
 
-    setText('')
     setBusy(true)
     pickBot(bot.name)
     launchPlane(sendRef.current, bot.name)
 
     try {
       await sendTask(bot, task)
+      setText('')
     } catch (err) {
-      try {
-        host.notifyError(err, `Could not send to ${look.title}`)
-      } catch {
-        /* older shell */
-      }
-
-      try {
-        await openBot(bot)
-      } catch {
-        /* already toasted */
-      }
+      setText(task)
+      try { host.notifyError(err, `Could not send to ${look.title}`) } catch { /* older shell */ }
     } finally {
       setBusy(false)
     }
@@ -3623,44 +3930,60 @@ function TaskBar({ roster, activeProfile }) {
       jsx(BotPicker, { roster, bot, look }),
       jsx('input', {
         ref: inputRef,
-        className: 'office-task-input',
+        className: cn('office-task-input', job?.state === JOB_STATES.FAILED && 'is-failed'),
         value: text,
-        placeholder: sending ? `${look.title} is on it…` : `Tell ${look.title}…`,
-        disabled: busy || sending,
+        placeholder: sending ? `${look.title} is on it…` : job?.state === JOB_STATES.FAILED ? 'Review the failed task and try again…' : `Tell ${look.title}…`,
+        disabled: busy || sending || unknown,
+        'aria-describedby': job?.error ? 'office-task-status' : undefined,
         onChange: event => setText(event.target.value)
       }),
-      jsx('button', {
-        ref: sendRef,
-        type: 'submit',
-        className: 'office-task-send',
-        disabled: busy || sending || !text.trim(),
-        children: sending ? 'on it' : 'Send'
-      })
+      unknown
+        ? jsxs(Fragment, { children: [
+            jsx('button', { type: 'button', className: 'office-task-recover', onClick: () => void openBot(bot), children: 'open chat' }),
+            jsx('button', {
+              type: 'button',
+              className: 'office-task-recover',
+              onClick: async () => {
+                const copied = await pluginCtx?.os?.writeClipboard?.(job.prompt)
+                if (!copied) host.notify?.({ kind: 'error', message: 'Could not copy the task.' })
+              },
+              children: 'copy task'
+            }),
+            jsx('button', { type: 'button', className: 'office-task-recover', onClick: () => clearJob(bot.name, job.id), children: 'dismiss' })
+          ] })
+        : jsx('button', {
+            ref: sendRef,
+            type: 'submit',
+            className: 'office-task-send',
+            disabled: busy || sending || !text.trim(),
+            children: sending ? 'on it' : job?.state === JOB_STATES.FAILED ? 'Retry' : 'Send'
+          }),
+      job?.error ? jsx('span', { id: 'office-task-status', className: 'office-task-status', role: 'status', children: job.error }) : null
     ]
   })
 }
 
 function OfficeFloor() {
-  const { data, error, isLoading } = useRoster()
+  const { data, error, isLoading, refetch } = useRoster()
   const turnBusy = useTurnBusy()
-  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
+  const activeProfile = (useValue(focusedProfileState) || 'default').trim() || 'default'
   useValue($avatars)
-  const now = usePulse(200)
+  const jobs = useValue($jobs)
+  const hasTransientWork = Object.values(jobs).some(row => row && (row.state === JOB_STATES.SUBMITTING || row.state === JOB_STATES.RUNNING))
+  const now = usePulse(hasTransientWork ? 200 : 1000)
   const night = isNightHour(new Date(now))
   const sky = skyState(new Date(now))
   const peek = useValue($peekUntil) > now
-  const jobs = useValue($jobs)
   const backdrop = useValue($backdrop)
   const trophies = useValue($trophies)
   const hint = useValue($hint)
   const week = useValue($week)
   const roomRef = useRef(null)
-  const prevBusy = useRef(false)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
   const selected = resolvePicked(roster, useValue($selected), activeProfile)
-  const working = roster.filter(
-    bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs[bot.name]) }) === 'think'
-  )
+  const working = roster.filter(bot => jobs[bot.name] && (jobs[bot.name].state === JOB_STATES.SUBMITTING || jobs[bot.name].state === JOB_STATES.RUNNING))
+  const attention = roster.filter(bot => jobs[bot.name] && (jobs[bot.name].state === JOB_STATES.FAILED || jobs[bot.name].state === JOB_STATES.UNKNOWN))
+  const externalBusy = turnBusy && !working.length
   const idleCount = idleBotNames(roster, jobs, activeProfile, turnBusy).length
   const news = useValue($news)
   const newsNames = roster.map(bot => bot.name).filter(name => news[name])
@@ -3673,21 +3996,19 @@ function OfficeFloor() {
     pullAvatars(roster)
   }, [roster])
 
+  // Reattach only persisted, owner-bound work. Runtime ids are ephemeral but
+  // the stored id is durable, so the fallback poll can reacquire liveness after
+  // a plugin reload without ever resubmitting the prompt.
   useEffect(() => {
-    if (prevBusy.current && !turnBusy && activeProfile) {
-      celebrate(activeProfile)
+    for (const [name, row] of Object.entries(jobs)) {
+      if (!jobIsActive(row) || jobPollers.has(name) || !row.storedSessionId) continue
+      watchJob(name, row.id)
     }
-
-    if (turnBusy && activeProfile) {
-      startRound(activeProfile)
-    }
-
-    prevBusy.current = turnBusy
-  }, [turnBusy, activeProfile])
+  }, [jobs])
 
   useEffect(() => {
-    tickRoam(now, roomRef.current, { jobs })
-  }, [now, jobs])
+    tickRoam(now, roomRef.current, { jobs, rosterNames: roster.map(bot => bot.name) })
+  }, [now, jobs, roster])
 
   useEffect(() => {
     tickNight(now, night, roster, jobs, activeProfile, turnBusy)
@@ -3710,7 +4031,8 @@ function OfficeFloor() {
   useEffect(() => {
     const onKey = event => {
       const tag = event.target?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable || event.metaKey || event.ctrlKey || event.altKey) {
+      const interactive = event.target?.closest?.('button, a, input, textarea, select, [contenteditable="true"], [role="button"], [role="option"]')
+      if (event.defaultPrevented || event.repeat || interactive || event.target?.isContentEditable || event.metaKey || event.ctrlKey || event.altKey) {
         return
       }
 
@@ -3724,7 +4046,7 @@ function OfficeFloor() {
 
       if (arrows[event.key]) {
         event.preventDefault()
-        if (jobs[bot.name] || $game.get()) {
+        if (jobIsActive(jobs[bot.name]) || $game.get()) {
           return
         }
         const [dx, dy] = arrows[event.key]
@@ -3834,12 +4156,19 @@ function OfficeFloor() {
                 : null,
               jsxs('button', {
                 type: 'button',
-                className: cn('office-count', working.length && 'is-link'),
-                title: working.length ? 'Scroll to the desk' : undefined,
-                onClick: () => working.length && scrollToDesk(roomRef.current, working[0].name),
+                className: cn('office-count', (working.length || attention.length) && 'is-link'),
+                title: working.length || attention.length ? 'Scroll to the desk' : undefined,
+                onClick: () => {
+                  const target = working[0] || attention[0]
+                  if (target) scrollToDesk(roomRef.current, target.name)
+                },
                 children: [
                   jsx('span', { className: cn('office-pulse', working.length && 'is-live') }),
-                  working.length ? headerNames(working.map(bot => nameOf(bot.name)), 'thinking', 'thinking') : roster.length ? 'All quiet' : 'No desks yet'
+                  working.length
+                    ? headerNames(working.map(bot => nameOf(bot.name)), 'working', 'working')
+                    : attention.length
+                      ? headerNames(attention.map(bot => nameOf(bot.name)), 'needs attention', 'need attention')
+                      : externalBusy ? 'Chat is busy' : roster.length ? 'All quiet' : 'No desks yet'
                 ]
               })
             ]
@@ -3852,9 +4181,19 @@ function OfficeFloor() {
         onPointerDown: onFloor,
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
+          jsx('div', {
+            className: 'office-live-status',
+            role: 'status',
+            'aria-live': 'polite',
+            children: working.length
+              ? `${working.map(bot => nameOf(bot.name)).join(', ')} ${working.length === 1 ? 'is working' : 'are working'}`
+              : attention.length
+                ? `${attention.map(bot => nameOf(bot.name)).join(', ')} ${attention.length === 1 ? 'needs' : 'need'} attention`
+                : externalBusy ? 'A chat outside the Office is busy.' : ''
+          }),
           jsx('div', { className: cn('office-plant', working.length && 'is-lean'), 'aria-hidden': true }),
           jsx(Ambience, { backdrop, tally: Object.values(trophies).reduce((a, b) => a + b, 0), sky, roster, trophies }),
-          hint === 'task' || hint === 'play' ? jsx(HintBubble, { roster, stage: hint, onClose: dismissHint }) : null,
+          hint === 'task' || hint === 'play' ? jsx(HintBubble, { roster, stage: hint, selectedName: selected, onClose: dismissHint }) : null,
           jsx(OfficeProps, {
             now,
             roomRef,
@@ -3870,9 +4209,9 @@ function OfficeFloor() {
           isLoading
             ? jsx('div', { className: 'office-empty', children: 'Opening the office…' })
             : error
-              ? jsx('div', {
+              ? jsxs('div', {
                   className: 'office-empty',
-                  children: 'Could not load bots. Update Hermes if profiles.list is missing.'
+                  children: ['Could not load bots. ', jsx('button', { type: 'button', className: 'office-retry', onClick: () => void refetch(), children: 'Try again' })]
                 })
               : roster.length === 0
                 ? jsx('div', {
@@ -3895,7 +4234,8 @@ function OfficeFloor() {
                                     bot,
                                     isActive: bot.name === activeProfile,
                                     turnBusy,
-                                    tasked: Boolean(jobs[bot.name]),
+                                    tasked: jobIsActive(jobs[bot.name]),
+                                    taskState: jobs[bot.name]?.state,
                                     picked: bot.name === selected,
                                     roomRef,
                                     night,
@@ -3933,11 +4273,11 @@ function OfficeFloor() {
 function OfficeChip() {
   const { data } = useRoster()
   const turnBusy = useTurnBusy()
-  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
+  const activeProfile = (useValue(focusedProfileState) || 'default').trim() || 'default'
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
   const jobs = useValue($jobs)
   const thinking = roster.some(
-    bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: Boolean(jobs[bot.name]) }) === 'think'
+    bot => deskMood({ isActive: bot.name === activeProfile, turnBusy, tasked: jobIsActive(jobs[bot.name]) }) === 'think'
   )
 
   return jsx(Tip, {
@@ -4023,7 +4363,11 @@ function injectOfficeCss() {
 .office-count { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ui-text-tertiary); }
 .office-pulse { width:8px; height:8px; border-radius:99px; background:var(--ui-text-quaternary); }
 .office-pulse.is-live { background:var(--ui-accent); box-shadow:0 0 0 4px color-mix(in srgb, var(--ui-accent) 22%, transparent); }
-.office-taskbar { display:flex; align-items:center; gap:8px; flex-shrink:0; padding:10px 16px 14px; }
+.office-taskbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex-shrink:0; padding:10px 16px 14px; overflow:visible; }
+.office-live-status { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.office-task-status { flex:1 1 100%; min-width:0; color:var(--ui-text-tertiary); font-size:11px; overflow-wrap:anywhere; }
+.office-task-recover, .office-retry { min-height:28px; padding:4px 9px; border:1px solid var(--ui-stroke-secondary); border-radius:var(--office-radius); background:transparent; color:inherit; font:inherit; font-size:11px; cursor:pointer; }
+.office-task-recover:hover, .office-retry:hover { border-color:var(--ui-accent); color:var(--ui-accent); }
 .office-task-who { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--ui-text-tertiary); white-space:nowrap; }
 .office-pick { position:relative; }
 .office-pick-btn { max-width:160px; overflow:hidden; text-overflow:ellipsis; border:0; background:transparent; color:var(--ui-text-primary, inherit); font:inherit; cursor:pointer; padding:0 2px; }
@@ -4034,6 +4378,23 @@ function injectOfficeCss() {
 .office-task-input { flex:1; min-width:0; height:32px; padding:0 10px; border:1px solid var(--ui-stroke-secondary); border-radius:var(--office-radius); background:color-mix(in srgb, var(--ui-bg) 86%, transparent); color:inherit; font:inherit; }
 .office-task-input:focus { outline:1px solid var(--ui-accent); }
 .office-task-input:disabled { opacity:.7; }
+.office-task-input.is-failed { border-color:color-mix(in srgb, #c9302c 60%, var(--ui-stroke-secondary)); }
+@media (max-width: 600px) {
+  .office-header { align-items:flex-start; flex-wrap:wrap; padding:12px 12px 8px; }
+  .office-head-right { width:100%; min-width:0; flex-wrap:wrap; gap:7px; }
+  .office-tools { flex-wrap:wrap; }
+  .office-recap { max-width:100%; }
+  .office-taskbar { padding:8px 12px 12px; }
+  .office-task-who { flex:1 1 100%; }
+  .office-task-input { flex:1 1 0; min-width:0; }
+  .office-task-send, .office-task-recover { flex:0 0 auto; }
+}
+@media (max-width: 360px) {
+  .office-title { font-size:18px; }
+  .office-taskbar { gap:6px; }
+  .office-task-input { flex-basis:100%; }
+  .office-task-send, .office-task-recover { flex:1 1 0; }
+}
 .office-task-send { height:32px; padding:0 12px; border:0; border-radius:var(--office-radius); background:var(--ui-accent); color:var(--ui-accent-fg, #fff); font-size:12px; cursor:pointer; }
 .office-task-send:disabled { opacity:.45; cursor:default; }
 .office-desk.is-picked .office-plate { outline:1px dashed var(--ui-accent); outline-offset:1px; }
@@ -4227,7 +4588,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 @keyframes office-puff-dot { 0% { transform: translate(0, 0); opacity:1; } 100% { transform: translate(var(--dx), -10px); opacity:0; } }
 @keyframes office-boot { 0% { filter: brightness(3) contrast(1.4); } 30% { filter: brightness(.6); } 60% { filter: brightness(2); } 100% { filter: brightness(1); } }
 @media (prefers-reduced-motion: reduce) {
-  .office-stage .office-person, .office-blink, .office-gaze, .office-face-think .office-eyes, .office-face-think .office-eye-l, .office-face-think .office-eye-r, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news { animation: none !important; }
+  .office-stage .office-person, .office-blink, .office-gaze, .office-face-think .office-eyes, .office-face-think .office-eye-l, .office-face-think .office-eye-r, .office-face-think, .office-face-pet, .office-face-clap, .office-face-shy, .office-screen.is-on, .office-slice, .office-plant, .office-desk-chair.is-wobble, .office-person.is-drop .office-face, .office-butterfly, .office-wing, .office-sweep, .office-oven-fire, .office-bubble, .office-pendant, .office-person.has-pizza .office-face, .office-note, .office-doodle-line, .office-hint, .office-news, .office-confetti, .office-confetti i { animation: none !important; }
+  .office-confetti { display:none !important; }
   .office-status.is-quiet { animation: none; opacity:.35; }
   .office-eom { animation: none; }
   .office-eyes { transition: none; }
@@ -4253,91 +4615,53 @@ const plugin = {
     injectOfficeCss()
 
     try {
-      Promise.resolve(ctx.storage?.get?.('seats'))
-        .then(value => {
-          if (value && typeof value === 'object' && !Array.isArray(value)) {
-            $seats.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('clock'))
-        .then(value => {
-          if (value === 'digital' || value === 'analog') {
-            $clockKind.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('clockPos'))
-        .then(value => {
-          if (value && typeof value.x === 'number' && typeof value.y === 'number') {
-            $clockPos.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('lastTask'))
-        .then(value => {
-          if (value && typeof value === 'object' && !Array.isArray(value)) {
-            $lastTask.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('month'))
-        .then(value => {
-          if (value && typeof value === 'object' && typeof value.start === 'number') {
-            $month.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('week'))
-        .then(value => {
-          if (value && typeof value === 'object' && typeof value.start === 'number') {
-            $week.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('hintStage'))
-        .then(value => {
-          $hint.set(value === 'wait' || value === 'play' || value === 'done' ? value : 'task')
-        })
-        .catch(() => $hint.set('task'))
-      Promise.resolve(ctx.storage?.get?.('news'))
-        .then(value => {
-          if (value && typeof value === 'object' && !Array.isArray(value)) {
-            $news.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('ritualHour'))
-        .then(value => {
-          if (typeof value === 'number') {
-            $ritual.set({ hour: value, at: 0 })
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('trophies'))
-        .then(value => {
-          if (value && typeof value === 'object' && !Array.isArray(value)) {
-            $trophies.set(value)
-          }
-        })
-        .catch(() => undefined)
-      Promise.resolve(ctx.storage?.get?.('backdrop'))
-        .then(value => {
-          if (backdropNames().includes(value)) {
-            $backdrop.set(value)
-          }
-        })
-        .catch(() => undefined)
+      const seats = ctx.storage?.get?.('seats', null)
+      if (seats && typeof seats === 'object' && !Array.isArray(seats)) $seats.set(seats)
+      const clock = ctx.storage?.get?.('clock', null)
+      if (clock === 'digital' || clock === 'analog') $clockKind.set(clock)
+      const clockPos = ctx.storage?.get?.('clockPos', null)
+      if (clockPos && typeof clockPos.x === 'number' && typeof clockPos.y === 'number') $clockPos.set(clockPos)
+      const lastTask = ctx.storage?.get?.('lastTask', null)
+      if (lastTask && typeof lastTask === 'object' && !Array.isArray(lastTask)) $lastTask.set(lastTask)
+      const month = ctx.storage?.get?.('month', null)
+      if (month && typeof month === 'object' && typeof month.start === 'number') $month.set(month)
+      const week = ctx.storage?.get?.('week', null)
+      if (week && typeof week === 'object' && typeof week.start === 'number') $week.set(week)
+      const hintStage = ctx.storage?.get?.('hintStage', null)
+      $hint.set(hintStage === 'wait' || hintStage === 'play' || hintStage === 'done' ? hintStage : 'task')
+      const news = ctx.storage?.get?.('news', null)
+      if (news && typeof news === 'object' && !Array.isArray(news)) $news.set(news)
+      const ritualHour = ctx.storage?.get?.('ritualHour', null)
+      if (typeof ritualHour === 'number') $ritual.set({ hour: ritualHour, at: 0 })
+      const trophies = ctx.storage?.get?.('trophies', null)
+      if (trophies && typeof trophies === 'object' && !Array.isArray(trophies)) $trophies.set(trophies)
+      const backdrop = ctx.storage?.get?.('backdrop', null)
+      if (backdropNames().includes(backdrop)) $backdrop.set(backdrop)
+      const jobs = normalizeJobs(ctx.storage?.get?.(JOBS_STORAGE_KEY, null))
+      $jobs.set(jobs)
+      for (const row of Object.values(jobs)) {
+        jobSequence = Math.max(jobSequence, Number(row.generation) || 0)
+      }
     } catch {
       /* no storage */
     }
 
+    let stopEvents = null
+    try {
+      if (typeof host.onEvent === 'function') stopEvents = host.onEvent('*', handleJobEvent)
+    } catch {
+      /* older shell */
+    }
     try {
       ctx.onDispose?.(() => {
-        for (const name of [...jobPollers.keys()]) {
-          clearJob(name)
-        }
+        stopEvents?.()
+        stopEvents = null
+        // Stop transport work without deleting persisted records. A plugin
+        // unload/reload must leave accepted tasks recoverable.
+        for (const { timer } of jobPollers.values()) clearInterval(timer)
+        jobPollers.clear()
         stopMusicalChairs()
+        pluginCtx = null
       })
     } catch {
       /* older shell */
@@ -4405,5 +4729,11 @@ export const __test = {
   assignChairs,
   beginWalk,
   advanceWalk,
-  walkHop
+  walkHop,
+  completionToken,
+  taskTransition,
+  normalizeJobs,
+  jobIsActive,
+  jobAllowsSubmission,
+  pickBotRoute
 }

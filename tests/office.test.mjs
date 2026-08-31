@@ -18,7 +18,7 @@ function loadHelpers() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine, completionToken, headerLine, quietStatus, monthStart, monthBump, monthLeader };`,
+    `${source.slice(start, end)}\nconst DRAG_PX = 8;\nconst BOT_CHAT_TITLE = 'Bot Chat';\nconst JOBS_SCHEMA_VERSION = 1;\nconst JOB_STATES = { SUBMITTING: 'submitting', RUNNING: 'running', COMPLETED: 'completed', FAILED: 'failed', UNKNOWN: 'unknown' };\nconst TASK_PROMPT_MAX = 4000;\n${source.slice(moodStart, previewEnd)}\nglobalThis.__h = { displayName, deskMood, previewLine, faceMood, movedEnough, near, isNightHour, stickyText, clockLabel, clockHands, nextClockKind, pickBotChatRow, roamMs, easeInOut, resolvePicked, backdropNames, nextBackdrop, idleBotNames, chairCountForGame, pickFreeStool, nextBarStand, placeChairs, assignChairs, beginWalk, advanceWalk, walkHop, freshPizza, claimPizza, gameRing, ringPoint, hopCourse, hopSquash, walkEase, nameHash, typedText, skyState, isBored, weekStart, weekBump, weekLine, completionToken, taskTransition, normalizeJobs, jobIsActive, jobAllowsSubmission, pickBotRoute, headerLine, quietStatus, monthStart, monthBump, monthLeader };`,
     context
   )
 
@@ -154,6 +154,19 @@ test('floor markup has a bar, hopscotch, and flat room skins', () => {
   assert.doesNotMatch(source, /AudioContext/)
 })
 
+function loadRouting(host) {
+  const start = source.indexOf('const botRouteCache = new Map()')
+  const end = source.indexOf('function outputText', start)
+  assert.ok(start >= 0 && end > start)
+
+  const context = { host }
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nglobalThis.__r = { botOwnerRoute, pickBotRoute, requestForBot, withBotLease };`,
+    context
+  )
+  return context.__r
+}
+
 function loadSkins() {
   const start = source.indexOf('const WALL_H = ')
   const end = source.indexOf("const BOT_CHAT_TITLE = 'Bot Chat'")
@@ -230,7 +243,7 @@ test('first bot to the pizza counter gets the slice, the rest get nothing', () =
 })
 
 test('pizza wiring: rounds start on tasks, claims happen at the counter in the parlor', () => {
-  assert.match(source, /function startRound\(name\)/)
+  assert.match(source, /function startRound\(name, roundToken = null\)/)
   assert.match(source, /\$pizza\.set\(freshPizza\(Date\.now\(\)\)\)/)
   assert.match(source, /\$backdrop\.get\(\) === 'pizza'/)
   assert.match(source, /claimPizza\(\$pizza\.get\(\), name, now\)/)
@@ -408,12 +421,138 @@ test('a round celebrates once even when two paths see the completion', () => {
   assert.equal(completionToken({ doneRound: 0 }), null)
 })
 
-test('completion wiring: celebrate checks the token, both paths call celebrate, kickoff is gone', () => {
+test('task reducer keeps ambiguous recovery unknown and rejects stale generations', () => {
+  const { taskTransition, normalizeJobs } = loadHelpers()
+  const job = { id: 'office-1', profile: 'scout', storedSessionId: 'stored-1', prompt: 'read tests', state: 'running', effectsApplied: false }
+  assert.equal(taskTransition(job, { type: 'unknown', id: 'other' }), job)
+  assert.equal(taskTransition(job, { type: 'unknown', id: job.id }).state, 'unknown')
+  assert.equal(taskTransition(job, { type: 'completed', id: job.id }).state, 'completed')
+  assert.equal(normalizeJobs({ version: 1, records: { scout: job, broken: { state: 'running' } } }).scout.prompt, 'read tests')
+  assert.equal(normalizeJobs({ version: 1, records: { scout: { ...job, state: 'wat' } } }).scout.state, 'unknown')
+  assert.equal(Object.keys(normalizeJobs({ version: 2, records: { scout: job } })).length, 0)
+})
+
+test('task reducer records explicit failures and ignores late terminal reversals', () => {
+  const { taskTransition, jobIsActive, jobAllowsSubmission } = loadHelpers()
+  const job = { id: 'office-2', state: 'submitting' }
+  const failed = taskTransition(job, { type: 'failed', id: job.id, error: 'provider unavailable' })
+  assert.equal(failed.state, 'failed')
+  assert.equal(failed.error, 'provider unavailable')
+  assert.equal(taskTransition(failed, { type: 'completed', id: job.id }), failed)
+  assert.equal(jobIsActive(job), true, 'submitting is an active lifecycle state')
+  assert.equal(jobIsActive({ state: 'running' }), true)
+  assert.equal(jobAllowsSubmission({ state: 'running' }), false)
+  assert.equal(jobAllowsSubmission(failed), true, 'a proven failure can be retried as a new generation')
+  assert.equal(jobAllowsSubmission({ state: 'completed' }), true, 'a completed bot can receive another task')
+})
+
+test('route selection stays on the active connection and fails on ambiguity', () => {
+  const { pickBotRoute } = loadHelpers()
+  const routes = [
+    { connectionId: 'local', profile: 'scout', targetProfile: 'scout' },
+    { connectionId: 'vps', profile: 'scout', targetProfile: 'worker' }
+  ]
+
+  assert.equal(pickBotRoute(routes, 'scout', 'vps').connectionId, 'vps')
+  assert.equal(pickBotRoute([routes[0]], 'scout', null).connectionId, 'local')
+  assert.throws(() => pickBotRoute(routes, 'scout', null), /more than one connection owner/)
+  assert.equal(pickBotRoute(routes, 'missing', 'vps'), null)
+})
+
+test('requestForBot sends through the exact route and rewrites backend profile operands', async () => {
+  const calls = []
+  const routes = [
+    { connectionId: 'local', profile: 'scout', targetProfile: 'scout' },
+    { connectionId: 'vps', profile: 'scout', targetProfile: 'worker' }
+  ]
+  const host = {
+    state: { connectionId: { get: () => 'vps' }, profile: { get: () => 'default' } },
+    profileRoutes: async () => routes,
+    requestProfile: async (...args) => { calls.push(args); return { ok: true } },
+    request: async () => { throw new Error('ambient request must not run') }
+  }
+  const { requestForBot } = loadRouting(host)
+
+  await requestForBot({ name: 'scout' }, 'session.list', { profile: 'scout' })
+  await requestForBot({ name: 'scout' }, 'profiles.configure', { name: 'scout', ui_meta: {} })
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0][0].connectionId, 'vps')
+  assert.equal(calls[0][2].profile, 'worker')
+  assert.equal(calls[1][2].name, 'worker')
+})
+
+test('withBotLease retains one routed session sequence and always releases it', async () => {
+  const events = []
+  const route = { connectionId: 'vps', profile: 'scout', targetProfile: 'worker' }
+  const host = {
+    state: { connectionId: { get: () => 'vps' }, profile: { get: () => 'default' } },
+    profileRoutes: async () => [route],
+    retainProfile: async owner => {
+      events.push(`retain:${owner.connectionId}`)
+      return () => events.push('release')
+    }
+  }
+  const { withBotLease } = loadRouting(host)
+
+  await withBotLease({ name: 'scout' }, async owner => events.push(`run:${owner.targetProfile}`))
+  assert.deepEqual(events, ['retain:vps', 'run:worker', 'release'])
+})
+
+test('requestForBot fails closed when a registry owner cannot be resolved', async () => {
+  let dispatched = false
+  const host = {
+    state: { connectionId: { get: () => 'missing' }, profile: { get: () => 'default' } },
+    profileRoutes: async () => [{ connectionId: 'vps', profile: 'scout', targetProfile: 'worker' }],
+    requestProfile: async () => { dispatched = true },
+    request: async () => { dispatched = true }
+  }
+  const { requestForBot } = loadRouting(host)
+
+  await assert.rejects(requestForBot({ name: 'scout' }, 'session.list', {}), /connection owner/)
+  assert.equal(dispatched, false)
+})
+
+test('storage hydration is synchronous and legacy keys remain unchanged', () => {
+  assert.match(source, /ctx\.storage\?\.get\?\.\('seats', null\)/)
+  assert.match(source, /ctx\.storage\?\.get\?\.\('trophies', null\)/)
+  assert.match(source, /ctx\.storage\?\.get\?\.\(JOBS_STORAGE_KEY, null\)/)
+  assert.doesNotMatch(source, /Promise\.resolve\(ctx\.storage/)
+  for (const key of ['seats', 'clock', 'clockPos', 'lastTask', 'month', 'week', 'hintStage', 'news', 'ritualHour', 'trophies', 'backdrop']) {
+    assert.match(source, new RegExp(`get\\?\\.\\('${key}'`), `${key} still hydrates under its legacy key`)
+  }
+})
+
+test('completion wiring uses session-owned events and no arbitrary new-chat fallback', () => {
   assert.match(source, /const round = completionToken\(row\)/)
-  assert.equal((source.match(/celebrate\(/g) || []).length, 3, 'one definition and two call sites')
-  assert.match(source, /round: now, nap: false, goHome: true/, 'startRound stamps the round')
+  assert.equal((source.match(/celebrate\(/g) || []).length, 2, 'one definition and one session-owned call site')
+  assert.match(source, /round: roundToken \|\|/, 'startRound stamps the unique round')
+  assert.match(source, /host\.onEvent\('\*', handleJobEvent\)/, 'completion events are correlated through the host event seam')
+  assert.match(source, /row\.connectionId && event\.connectionId/, 'events are owner-qualified when the gateway supplies an owner')
+  assert.doesNotMatch(source, /host\.newChat/)
   assert.doesNotMatch(source, /tell me about yourself/)
   assert.match(source, /usePulse\(moving \? 16 : 240\)/, 'the 60fps loop only runs while something moves')
+})
+
+test('desk task state is passed as a prop instead of reading an undefined jobs variable', () => {
+  const start = source.indexOf('function Desk(')
+  const end = source.indexOf('function Doodle', start)
+  const desk = source.slice(start, end)
+  assert.match(desk, /taskState/)
+  assert.doesNotMatch(desk, /jobs\[bot\.name\]/)
+})
+
+test('keyboard, drag, responsive, recovery, and reduced-motion contracts are hardened', () => {
+  assert.match(source, /event\.defaultPrevented \|\| event\.repeat \|\| interactive/)
+  assert.ok((source.match(/addEventListener\('pointercancel'/g) || []).length >= 2)
+  assert.ok((source.match(/removeEventListener\('pointercancel'/g) || []).length >= 2)
+  assert.match(source, /addEventListener\('blur', cancel\)/)
+  assert.match(source, /@media \(max-width: 600px\)/)
+  assert.match(source, /@media \(max-width: 360px\)/)
+  assert.match(source, /pluginCtx\?\.os\?\.writeClipboard/)
+  assert.match(source, /children: 'dismiss'/)
+  const rm = source.slice(source.indexOf('@media (prefers-reduced-motion: reduce)'))
+  assert.match(rm, /\.office-confetti \{ display:none !important; \}/)
 })
 
 test('header names and quiet labels', () => {

@@ -2,8 +2,9 @@
 // skins, and hop math, so the floor can be eyeballed in a browser without
 // Hermes Desktop. Run: node tools/preview/build.mjs && node tools/preview/serve.mjs
 // then open http://localhost:4877. Fake desks, one thinking bot, one away, a
-// walker at the bar, game chairs, hopscotch, per skin ambience. Buttons at the
-// bottom right toggle theme, night, and more desks. window.hopDemo() runs a hop.
+// walker at the bar, lifecycle states, game chairs, hopscotch, and per-skin
+// ambience. Controls toggle theme, night, 320–600px widths, and 5/20/100 desks.
+// window.hopDemo() runs a hop.
 import { readFileSync, writeFileSync } from 'node:fs'
 import vm from 'node:vm'
 
@@ -33,13 +34,13 @@ const face = (color, mood = 'idle', sad = false) => {
   return `<svg viewBox="0 0 40 44" width="42" height="42" class="office-face office-face-${mood}${sad ? ' is-sad' : ''}"><rect x="3" y="3" width="34" height="34" rx="11" fill="${color}"/><g class="office-eyes"><g class="office-gaze" style="animation-duration:${(8 + (h % 41) / 10).toFixed(1)}s;animation-delay:-${h % 7900}ms"><g class="office-blink${h % 4 === 0 ? ' is-double' : ''}" style="animation-duration:${(3.2 + (h % 27) / 10).toFixed(1)}s;animation-delay:-${h % 2900}ms">${eye('l', 15)}${eye('r', 25)}</g></g></g>${mood === 'think' ? '<g><circle cx="16" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-0"/><circle cx="20" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-1"/><circle cx="24" cy="40" r="1.2" fill="' + color + '" class="office-dot office-dot-2"/></g>' : ''}</svg>`
 }
 
-const desk = ({ name, color, think, away, say, night }) => `
+const desk = ({ name, color, think, away, say, night, taskState }) => `
 <div class="office-desk ${think ? 'is-think' : ''} ${away ? 'has-wander' : ''}" data-desk="${name}">
   <div class="office-stage">
     <div class="office-desk-top"></div>${say && !think ? '<button type="button" class="office-memo"><svg viewBox="0 0 22 18" width="22" height="18"><path d="M1 3 L11 10 L21 3 V16 H1 Z" fill="#fff8e6" stroke="#8a7a5a" stroke-width="1"/><path d="M1 3 H21 L11 10 Z" fill="#f4e9c8" stroke="#8a7a5a" stroke-width="1"/></svg></button>' : ''}${think ? '<div class="office-confetti">' + [0,1,2,3,4,5,6].map(i => '<i style="--i:' + i + '"></i>').join('') + '</div>' : ''}
     ${night ? '<div class="office-lamp" aria-hidden="true"><div class="office-lamp-shade"></div><div class="office-lamp-stem"></div><div class="office-lamp-base"></div></div>' : ''}
     <div class="office-monitor"><div class="office-monitor-head"><div class="office-screen ${think ? 'is-on' : ''}"><div class="office-screen-copy">${say || ''}</div></div><div class="office-monitor-cam"></div></div><div class="office-monitor-neck"></div><div class="office-monitor-base"></div></div>
-    <div class="office-seat"><svg viewBox="0 0 42 46" width="42" height="46" class="office-desk-chair "><rect x="8" y="1" width="26" height="22" rx="7" fill="#3b3b43"/><rect x="11" y="4" width="20" height="16" rx="5" fill="#4c4c56"/><rect x="4" y="22" width="34" height="10" rx="4" fill="#454550"/><rect x="4" y="22" width="34" height="3" rx="1.5" fill="rgba(255,255,255,.14)"/><rect x="19.5" y="32" width="3" height="7" rx="1" fill="#8a8a94"/><path d="M21 39 L7 44 M21 39 L35 44 M21 39 L21 45" stroke="#8a8a94" stroke-width="2.4" stroke-linecap="round"/><circle cx="7" cy="44.5" r="1.6" fill="#26262c"/><circle cx="35" cy="44.5" r="1.6" fill="#26262c"/><circle cx="21" cy="45" r="1.6" fill="#26262c"/></svg>${away ? '' : `<div class="office-person is-${think ? 'think' : 'idle'}">${face(color, think ? 'think' : 'idle')}<span class="office-status ${think ? '' : 'is-idle'}">${think ? 'thinking' : 'here'}</span></div>`}</div>
+    <div class="office-seat"><svg viewBox="0 0 42 46" width="42" height="46" class="office-desk-chair "><rect x="8" y="1" width="26" height="22" rx="7" fill="#3b3b43"/><rect x="11" y="4" width="20" height="16" rx="5" fill="#4c4c56"/><rect x="4" y="22" width="34" height="10" rx="4" fill="#454550"/><rect x="4" y="22" width="34" height="3" rx="1.5" fill="rgba(255,255,255,.14)"/><rect x="19.5" y="32" width="3" height="7" rx="1" fill="#8a8a94"/><path d="M21 39 L7 44 M21 39 L35 44 M21 39 L21 45" stroke="#8a8a94" stroke-width="2.4" stroke-linecap="round"/><circle cx="7" cy="44.5" r="1.6" fill="#26262c"/><circle cx="35" cy="44.5" r="1.6" fill="#26262c"/><circle cx="21" cy="45" r="1.6" fill="#26262c"/></svg>${away ? '' : `<div class="office-person is-${think ? 'think' : 'idle'}">${face(color, think ? 'think' : 'idle')}<span class="office-status ${think ? '' : 'is-idle'}">${taskState === 'failed' ? 'failed' : taskState === 'unknown' ? 'status?' : think ? 'thinking' : 'here'}</span></div>`}</div>
   </div>
   <button type="button" class="office-plate"><div class="office-name">${name}</div><div class="office-handle">@${name.toLowerCase()}<span class="office-stars">\u2605 3</span></div></button>
   ${say ? `<button type="button" class="office-say">${say}</button>` : ''}
@@ -98,7 +99,7 @@ ${css}
 </div>
 </div>
 <div class="bar">
-  <button id="theme">theme</button><button id="night">night</button><button id="more">more desks</button>
+  <button id="theme">theme</button><button id="night">night</button><button id="width">width: full</button><button id="more">desks: 5</button>
 </div>
 <script>
 const skins = ['carpet','loft','garden','nightclub','pizza']
@@ -106,18 +107,25 @@ const root = document.getElementById('root'), room = document.getElementById('ro
 const desks = [
   ${JSON.stringify(desk({ name: 'Hermes', color: '#a26bff', say: 'Good news, Adolan: nothing is ruined. I traced this end to end and the config is fine.' }))},
   ${JSON.stringify(desk({ name: 'Arke', color: '#f0a040', away: true }))},
-  ${JSON.stringify(desk({ name: 'Scout', color: '#3ac0a0', think: true, say: 'reading tests…' }))}
+  ${JSON.stringify(desk({ name: 'Scout', color: '#3ac0a0', think: true, say: 'reading tests…' }))},
+  ${JSON.stringify(desk({ name: 'Scribe With A Very Long Name', color: '#d46b86', taskState: 'failed', say: 'Provider unavailable. The task is ready to retry.' }))},
+  ${JSON.stringify(desk({ name: 'Builder', color: '#4e91d8', taskState: 'unknown', say: 'Status could not be confirmed. Open Bot Chat to inspect it.' }))}
 ]
 const nightDesks = [
   ${JSON.stringify(desk({ name: 'Hermes', color: '#a26bff', night: true, say: 'Good news, Adolan: nothing is ruined. I traced this end to end and the config is fine.' }))},
   ${JSON.stringify(desk({ name: 'Arke', color: '#f0a040', away: true, night: true }))},
-  ${JSON.stringify(desk({ name: 'Scout', color: '#3ac0a0', think: true, night: true, say: 'reading tests…' }))}
+  ${JSON.stringify(desk({ name: 'Scout', color: '#3ac0a0', think: true, night: true, say: 'reading tests…' }))},
+  ${JSON.stringify(desk({ name: 'Scribe With A Very Long Name', color: '#d46b86', night: true, taskState: 'failed', say: 'Provider unavailable. The task is ready to retry.' }))},
+  ${JSON.stringify(desk({ name: 'Builder', color: '#4e91d8', night: true, taskState: 'unknown', say: 'Status could not be confirmed. Open Bot Chat to inspect it.' }))}
 ]
-let more = false
+const deskCounts = [5, 20, 100]
+let deskCountIndex = 0
 function render() {
   const night = root.classList.contains('is-night')
   const list = night ? nightDesks : desks
-  grid.innerHTML = (more ? list.concat(list, list) : list).join('')
+  const count = deskCounts[deskCountIndex]
+  grid.innerHTML = Array.from({ length: count }, (_, index) => list[index % list.length]).join('')
+  document.getElementById('more').textContent = 'desks: ' + count
 }
 render()
 const PIE = '<svg viewBox="0 0 40 40" width="34" height="34" class="office-pie is-eaten"><circle cx="20" cy="20" r="19.5" fill="#4a4a4e"/><circle cx="20" cy="20" r="18" fill="#c9702c"/><circle cx="20" cy="20" r="15" fill="#f2b53a"/><g fill="#c9302c"><circle cx="13" cy="14" r="2.4"/><circle cx="25" cy="12" r="2.4"/><circle cx="28" cy="23" r="2.4"/><circle cx="18" cy="26" r="2.4"/><circle cx="10" cy="24" r="2.2"/><circle cx="21" cy="19" r="2"/></g><g fill="#4f8f38"><ellipse cx="16" cy="20" rx="2" ry="1.2" transform="rotate(-30 16 20)"/><ellipse cx="25" cy="28" rx="2" ry="1.2" transform="rotate(20 25 28)"/></g><path d="M20 20 L20 1.5 A18.5 18.5 0 0 1 36.7 11.2 Z" fill="#4a4a4e"/></svg>'
@@ -141,7 +149,15 @@ function setSkin(s) {
 document.getElementById('skin').onclick = () => setSkin(skins[(skins.indexOf(location.hash.slice(1) || 'carpet') + 1) % skins.length])
 document.getElementById('theme').onclick = () => document.documentElement.classList.toggle('dark')
 document.getElementById('night').onclick = () => { root.classList.toggle('is-night'); render() }
-document.getElementById('more').onclick = () => { more = !more; render() }
+document.getElementById('more').onclick = () => { deskCountIndex = (deskCountIndex + 1) % deskCounts.length; render() }
+const widths = ['full', '600px', '400px', '320px']
+let widthIndex = 0
+document.getElementById('width').onclick = () => {
+  widthIndex = (widthIndex + 1) % widths.length
+  const width = widths[widthIndex]
+  document.getElementById('app').style.width = width === 'full' ? '' : width
+  document.getElementById('width').textContent = 'width: ' + width
+}
 setSkin(location.hash.slice(1) || 'carpet')
 window.setSkin = setSkin
 ${HOPFN}
