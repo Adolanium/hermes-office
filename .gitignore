@@ -1,2 +1,5 @@
 tools/preview/preview.html
 backdrops/
+tools/preview/node_modules/
+tools/preview/live.html
+tools/preview/live-bundle.js

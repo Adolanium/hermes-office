@@ -50,6 +50,7 @@ const $week = atom(null)
 const $month = atom(null)
 const $hint = atom('off')
 const $news = atom({})
+const $officeInput = atom({})
 const $ritual = atom({ hour: -1, at: 0 })
 const JOBS_STORAGE_KEY = 'jobs'
 const JOBS_SCHEMA_VERSION = 1
@@ -171,9 +172,13 @@ function celebrate(name, route = null) {
   }
 
   patchFx(name, { doneRound: round, clapUntil: now + 1100, confettiUntil: now + 950, bangUntil: now + 1500, nap: false, goBar: true, goHome: false })
+  const quirk = officeQuirk(name)
+  officeSay(name, quirk.id === 'champion' ? 'Another historic delivery!' : quirk.id === 'quiet' ? 'Your parcel is ready.' : quirk.line)
+  if (quirk.id === 'quiet') patchFx(name, { clapUntil: 0, confettiUntil: 0 })
   addTrophy(name, route)
   bumpWeek('tasks', name)
   bumpMonth(name)
+  rememberOffice('work', `${displayName({ name }, {})} delivered a result.`, [name])
   leaveNote(name, now)
   advanceHint('play')
 }
@@ -236,61 +241,6 @@ function speckle(points, fill, r = 1) {
 
 // Running bond bricks. Tile width must be a multiple of brick + joint and the
 // colour list must be exactly four long so the half-offset rows wrap cleanly.
-function brickRows(width, height, brick, joint, mortar, colors) {
-  const step = brick.w + joint
-  const rowH = brick.h + joint
-  let out = `<rect width='${width}' height='${height}' fill='${mortar}'/>`
-
-  for (let row = 0, y = 0; y < height; row++, y += rowH) {
-    const offset = row % 2 ? -Math.floor(step / 2) : 0
-    for (let i = 0, x = offset; x < width; i++, x += step) {
-      out += `<rect x='${x}' y='${y}' width='${brick.w}' height='${brick.h}' rx='1' fill='${colors[(row * 3 + i) % colors.length]}'/>`
-    }
-  }
-
-  return out
-}
-
-// Straight-on floorboards. Horizontal planks, staggered end joints, no taper.
-function plankRows(width, plankH, colors, seam, joints) {
-  let out = ''
-
-  colors.forEach((fill, row) => {
-    const y = row * plankH
-    out += `<rect x='0' y='${y}' width='${width}' height='${plankH}' fill='${fill}'/>`
-    out += `<rect x='0' y='${y}' width='${width}' height='1' fill='rgba(255,255,255,.14)'/>`
-    out += `<rect x='0' y='${y + plankH - 1}' width='${width}' height='1' fill='${seam}'/>`
-    out += `<rect x='${joints[row]}' y='${y}' width='2' height='${plankH}' fill='${seam}'/>`
-    out += `<rect x='${(joints[row] + 9) % width}' y='${y + 7}' width='26' height='1' fill='rgba(0,0,0,.09)'/>`
-    out += `<rect x='${(joints[row] + 61) % width}' y='${y + 15}' width='34' height='1' fill='rgba(0,0,0,.08)'/>`
-  })
-
-  return out
-}
-
-// Top-down dance floor. A fixed 4x4 pattern so the tile repeats without seams.
-function checkerTiles(cell, colors, grid) {
-  const map = [
-    [0, 1, 2, 1],
-    [1, 3, 1, 0],
-    [2, 1, 0, 1],
-    [1, 0, 1, 3]
-  ]
-  let out = ''
-
-  map.forEach((row, r) => {
-    row.forEach((c, i) => {
-      const x = i * cell
-      const y = r * cell
-      out += `<rect x='${x}' y='${y}' width='${cell}' height='${cell}' fill='${colors[c]}'/>`
-      out += `<rect x='${x + 2.5}' y='${y + 2.5}' width='${cell - 5}' height='${cell - 5}' fill='none' stroke='rgba(255,255,255,${c === 3 ? '.35' : '.1'})' stroke-width='1'/>`
-    })
-  })
-
-  const size = cell * 4
-  return `${out}<path d='M0 0h${size}M0 ${cell}h${size}M0 ${cell * 2}h${size}M0 ${cell * 3}h${size}M0 0v${size}M${cell} 0v${size}M${cell * 2} 0v${size}M${cell * 3} 0v${size}' stroke='${grid}' stroke-width='2'/>`
-}
-
 const OFFICE_SKINS = {
   carpet: {
     wallColor: '#ebe2d1',
@@ -314,105 +264,6 @@ const OFFICE_SKINS = {
       ${speckle([[6, 9], [21, 30], [39, 14], [30, 42], [11, 38], [58, 6], [70, 27], [88, 12], [79, 41], [63, 39], [9, 57], [27, 74], [41, 60], [18, 89], [36, 84], [55, 60], [73, 77], [89, 58], [66, 90], [84, 86], [46, 24], [90, 30], [2, 26], [70, 62], [14, 76]], '#668c9c')}
       ${speckle([[16, 20], [33, 5], [75, 16], [52, 34], [24, 62], [4, 78], [92, 70], [60, 72], [44, 92], [80, 50], [38, 70], [86, 94]], '#4b6f80')}
       <path d='M48.5 0v96M0 48.5h96' stroke='#4d7283' stroke-width='1'/>
-    `)
-  },
-  loft: {
-    wallColor: '#c9baa9',
-    wallSize: '120px 86px',
-    wall: svgTile(120, WALL_H, `
-      ${brickRows(120, 80, { w: 28, h: 12 }, 2, '#c9baa9', ['#b25b41', '#a75237', '#bc6448', '#9e4b33'])}
-      <rect y='80' width='120' height='6' fill='#45454b'/>
-      <rect y='80' width='120' height='1' fill='#6c6c74'/>
-    `),
-    floorColor: '#c99b64',
-    floorSize: '192px 96px',
-    floor: svgTile(192, 96, `
-      ${plankRows(192, 24, ['#cfa46c', '#c49862', '#d6ab74', '#bf915b'], '#8f6540', [40, 130, 88, 8])}
-      <ellipse cx='150' cy='11' rx='3' ry='2' fill='#a2774a'/><ellipse cx='150' cy='11' rx='1.2' ry='.8' fill='#7d552f'/>
-      <ellipse cx='58' cy='60' rx='2.6' ry='1.8' fill='#a2774a'/><ellipse cx='58' cy='60' rx='1' ry='.7' fill='#7d552f'/>
-    `)
-  },
-  garden: {
-    wallColor: '#bde0f4',
-    wallSize: '160px 86px',
-    wall: svgTile(160, WALL_H, `
-      <defs><linearGradient id='sky' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#a9d5f0'/><stop offset='1' stop-color='#dceff9'/></linearGradient></defs>
-      <rect width='160' height='86' fill='url(#sky)'/>
-      <g fill='#fff' opacity='.9'><ellipse cx='36' cy='22' rx='14' ry='6'/><ellipse cx='44' cy='18' rx='9' ry='6'/><ellipse cx='28' cy='19' rx='8' ry='5'/><ellipse cx='118' cy='34' rx='11' ry='5'/><ellipse cx='124' cy='31' rx='7' ry='5'/></g>
-      <g fill='#4c9440'><circle cx='0' cy='64' r='13'/><circle cx='22' cy='62' r='14'/><circle cx='44' cy='65' r='12'/><circle cx='66' cy='61' r='14'/><circle cx='88' cy='64' r='13'/><circle cx='110' cy='62' r='14'/><circle cx='132' cy='65' r='12'/><circle cx='154' cy='62' r='13'/></g>
-      <g fill='#63b04f'><circle cx='11' cy='58' r='9'/><circle cx='34' cy='56' r='9'/><circle cx='56' cy='58' r='9'/><circle cx='78' cy='55' r='9'/><circle cx='100' cy='58' r='9'/><circle cx='122' cy='56' r='9'/><circle cx='144' cy='58' r='9'/></g>
-      <rect y='66' width='160' height='14' fill='#3f7f36'/>
-      <g fill='#f7f4ea'>
-        <rect y='60' width='160' height='3' rx='1'/><rect y='72' width='160' height='3' rx='1'/>
-        <path d='M4 52l4 -5l4 5v28h-8zM24 52l4 -5l4 5v28h-8zM44 52l4 -5l4 5v28h-8zM64 52l4 -5l4 5v28h-8zM84 52l4 -5l4 5v28h-8zM104 52l4 -5l4 5v28h-8zM124 52l4 -5l4 5v28h-8zM144 52l4 -5l4 5v28h-8z'/>
-      </g>
-      <g fill='#d9d3c2'><rect x='10' y='52' width='2' height='28'/><rect x='30' y='52' width='2' height='28'/><rect x='50' y='52' width='2' height='28'/><rect x='70' y='52' width='2' height='28'/><rect x='90' y='52' width='2' height='28'/><rect x='110' y='52' width='2' height='28'/><rect x='130' y='52' width='2' height='28'/><rect x='150' y='52' width='2' height='28'/></g>
-      <rect y='80' width='160' height='6' fill='#6a4b30'/>
-      <rect y='80' width='160' height='1' fill='#8a6a48'/>
-    `),
-    floorColor: '#72b455',
-    floorSize: '144px 144px',
-    floor: svgTile(144, 144, `
-      <rect width='144' height='144' fill='#72b455'/>
-      <g fill='#69ac4d'><ellipse cx='30' cy='104' rx='20' ry='10'/><ellipse cx='110' cy='34' rx='18' ry='9'/><ellipse cx='126' cy='118' rx='14' ry='8'/></g>
-      <g stroke='#5a9a40' stroke-width='1.4' stroke-linecap='round'>
-        <path d='M8 12l2 -5M15 30l2 -5M31 8l-2 -5M40 40l2 -5M6 50l2 -5M52 58l2 -5M62 82l-2 -5M84 66l2 -5M90 44l-2 -5M70 6l2 -5M26 88l2 -5M46 76l-2 -5M78 90l2 -5M36 22l2 -5M58 34l-2 -5M12 66l-2 -5M104 12l2 -5M118 58l-2 -5M134 22l2 -5M96 96l2 -5M112 80l-2 -5M138 70l2 -5M20 122l2 -5M48 110l-2 -5M64 130l2 -5M88 118l2 -5M104 138l-2 -5M130 96l2 -5M6 138l2 -5M40 138l-2 -5'/>
-      </g>
-      <g stroke='#8fd06c' stroke-width='1.4' stroke-linecap='round'>
-        <path d='M22 18l2 -5M44 26l-2 -5M60 12l2 -5M80 32l2 -5M14 42l2 -5M30 60l-2 -5M52 90l2 -5M88 82l-2 -5M72 50l2 -5M92 10l-2 -5M4 92l2 -5M40 90l2 -5M110 20l2 -5M126 46l-2 -5M100 66l2 -5M140 88l2 -5M120 110l-2 -5M56 120l2 -5M76 138l-2 -5M28 132l2 -5M8 112l2 -5M136 130l-2 -5'/>
-      </g>
-      <g><circle cx='24' cy='46' r='2.4' fill='#fff'/><circle cx='28' cy='42' r='2.4' fill='#fff'/><circle cx='28' cy='50' r='2.4' fill='#fff'/><circle cx='32' cy='46' r='2.4' fill='#fff'/><circle cx='28' cy='46' r='2' fill='#f7c948'/></g>
-      <g><circle cx='104' cy='100' r='2.4' fill='#fff'/><circle cx='108' cy='96' r='2.4' fill='#fff'/><circle cx='108' cy='104' r='2.4' fill='#fff'/><circle cx='112' cy='100' r='2.4' fill='#fff'/><circle cx='108' cy='100' r='2' fill='#f7c948'/></g>
-      <g fill='#4f8f38'><circle cx='72' cy='72' r='2'/><circle cx='75' cy='69' r='2'/><circle cx='75' cy='75' r='2'/></g>
-      <g fill='#4f8f38'><circle cx='128' cy='16' r='2'/><circle cx='131' cy='13' r='2'/><circle cx='131' cy='19' r='2'/></g>
-    `)
-  },
-  nightclub: {
-    wallColor: '#1b1030',
-    wallSize: '160px 86px',
-    wall: svgTile(160, WALL_H, `
-      <rect width='160' height='86' fill='#1b1030'/>
-      ${speckle([[14, 12], [38, 30], [61, 8], [92, 22], [121, 14], [147, 36], [27, 44], [76, 40], [106, 46], [138, 6]], '#f9a8d4', 1)}
-      ${speckle([[50, 20], [84, 10], [131, 28], [8, 34], [116, 40], [154, 18], [66, 48], [98, 4]], '#8fe9ff', 1)}
-      <rect y='58' width='160' height='9' fill='#ff4fb0' opacity='.18'/>
-      <rect y='61' width='160' height='3' rx='1.5' fill='#ff4fb0'/>
-      <rect y='62' width='160' height='1' fill='#ffd0ea'/>
-      <rect y='69' width='160' height='9' fill='#48e0ff' opacity='.16'/>
-      <rect y='72' width='160' height='3' rx='1.5' fill='#48e0ff'/>
-      <rect y='73' width='160' height='1' fill='#d8f8ff'/>
-      <rect y='80' width='160' height='6' fill='#0b0614'/>
-      <rect y='80' width='160' height='1' fill='#48e0ff' opacity='.5'/>
-    `),
-    floorColor: '#2c1656',
-    floorSize: '160px 160px',
-    floor: svgTile(160, 160, checkerTiles(40, ['#3a1a64', '#2c1656', '#4c1f74', '#7a2f8e'], '#0e0618'))
-  },
-  pizza: {
-    wallColor: '#f4e9d6',
-    wallSize: '160px 86px',
-    wall: svgTile(160, WALL_H, `
-      <rect width='160' height='86' fill='#f4e9d6'/>
-      <g fill='#c9302c'><rect width='20' height='16'/><rect x='40' width='20' height='16'/><rect x='80' width='20' height='16'/><rect x='120' width='20' height='16'/></g>
-      <g fill='#fbf5ea'><rect x='20' width='20' height='16'/><rect x='60' width='20' height='16'/><rect x='100' width='20' height='16'/><rect x='140' width='20' height='16'/></g>
-      <g fill='#c9302c'><circle cx='10' cy='16' r='10'/><circle cx='50' cy='16' r='10'/><circle cx='90' cy='16' r='10'/><circle cx='130' cy='16' r='10'/></g>
-      <g fill='#fbf5ea'><circle cx='30' cy='16' r='10'/><circle cx='70' cy='16' r='10'/><circle cx='110' cy='16' r='10'/><circle cx='150' cy='16' r='10'/></g>
-      <rect y='26' width='160' height='60' fill='#f4e9d6'/>
-      <rect y='26' width='160' height='3' fill='rgba(0,0,0,.12)'/>
-      <g stroke='#6a4a3a' stroke-width='1.2' fill='none'><path d='M0 36 Q20 44 40 36 T80 36 T120 36 T160 36'/></g>
-      <g fill='#f7d34a'><circle cx='10' cy='39' r='2.4'/><circle cx='30' cy='41' r='2.4'/><circle cx='50' cy='39' r='2.4'/><circle cx='70' cy='41' r='2.4'/><circle cx='90' cy='39' r='2.4'/><circle cx='110' cy='41' r='2.4'/><circle cx='130' cy='39' r='2.4'/><circle cx='150' cy='41' r='2.4'/></g>
-      <g fill='#c9302c'><rect y='64' width='16' height='16'/><rect x='32' y='64' width='16' height='16'/><rect x='64' y='64' width='16' height='16'/><rect x='96' y='64' width='16' height='16'/><rect x='128' y='64' width='16' height='16'/></g>
-      <g fill='#fbf5ea'><rect x='16' y='64' width='16' height='16'/><rect x='48' y='64' width='16' height='16'/><rect x='80' y='64' width='16' height='16'/><rect x='112' y='64' width='16' height='16'/><rect x='144' y='64' width='16' height='16'/></g>
-      <rect y='62' width='160' height='2' fill='#b89b7a'/>
-      <rect y='80' width='160' height='6' fill='#7a5238'/>
-      <rect y='80' width='160' height='1' fill='#a07858'/>
-    `),
-    floorColor: '#f1e6d4',
-    floorSize: '48px 48px',
-    floor: svgTile(48, 48, `
-      <rect width='48' height='48' fill='#f1e6d4'/>
-      <rect width='24' height='24' fill='#dc8f86'/>
-      <rect x='24' y='24' width='24' height='24' fill='#dc8f86'/>
-      <path d='M24.5 0v48M0 24.5h48M0 .5h48M.5 0v48' stroke='rgba(90,50,40,.14)' stroke-width='1'/>
     `)
   }
 }
@@ -823,7 +674,7 @@ function weekLine(stats) {
   const eaters = Object.entries(stats.pizzas || {}).sort((a, b) => b[1] - a[1])
   if (eaters.length) {
     const [who, n] = eaters[0]
-    bits.push(`${who} ate ${n} pizza${n === 1 ? '' : 's'}`)
+    bits.push(`${who === 'default' ? 'Hermes' : who} ate ${n} pizza${n === 1 ? '' : 's'}`)
   }
 
   if (stats.hops) {
@@ -1018,7 +869,7 @@ function roamMs(from, to) {
 }
 
 function backdropNames() {
-  return ['carpet', 'loft', 'garden', 'nightclub', 'pizza']
+  return ['carpet']
 }
 
 function nextBackdrop(kind) {
@@ -1604,6 +1455,7 @@ function updateJob(name, id, event) {
   if (!current) return null
   const next = taskTransition(current, event)
   if (next === current) return current
+  if (!jobIsActive(next)) clearOfficeInput(name)
   $jobs.set({ ...$jobs.get(), [name]: next })
   saveJobs()
   return next
@@ -1649,6 +1501,7 @@ function clearJob(name, id) {
 function finishJob(name, id, event) {
   const row = updateJob(name, id, event)
   if (!row || row.state !== JOB_STATES.COMPLETED || row.effectsApplied) return
+  clearOfficeInput(name)
   const next = { ...row, effectsApplied: true }
   $jobs.set({ ...$jobs.get(), [name]: next })
   saveJobs()
@@ -1667,6 +1520,7 @@ function handleJobEvent(event) {
     if (row.runtimeSessionId !== sid) continue
     if (row.connectionId && event.connectionId && row.connectionId !== event.connectionId) continue
     if (row.targetProfile && event.profile && row.targetProfile !== event.profile) continue
+    handleOfficeInput(name, row, event)
     if (event.type === 'message.start') {
       updateJob(name, row.id, { type: 'started' })
     } else if (event.type === 'message.complete') {
@@ -2051,11 +1905,12 @@ function finishWalk(name, walk) {
       patchFx(buddy[0], { fiveUntil: now + 1500, clapUntil: now + 900, lingerUntil: Math.max(buddy[1].lingerUntil || 0, now + 1800) })
     }
 
-    if ($backdrop.get() === 'pizza') {
+    {
       const { pizza, won } = claimPizza($pizza.get(), name, now)
       $pizza.set(pizza)
       if (won && pizza.winner === name && !(pizza.counted || {})[name]) {
         bumpWeek('pizza', name)
+        rememberOffice('pizza', `${displayName({ name }, {})} claimed the first slice.`, [name])
         pizza.counted = { ...(pizza.counted || {}), [name]: true }
       }
       patchFx(name, won ? { pizzaUntil: now + PIZZA_MS, lingerUntil: now + 6000 } : { noPizzaUntil: now + 4200 })
@@ -2610,9 +2465,13 @@ function PizzaSlice({ className }) {
 }
 
 function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five, yawn, cheers, gamePhase, leftover, pizza, noPizza, walkKind, drop, ritual, taskState, style, onPetStart }) {
-  const status = statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual, taskState })
+  const life = useValue($officeLife)
+  const needsInput = Boolean(useValue($officeInput)[bot.name])
+  const quirk = officeQuirk(bot.name, life)
+  const chatter = useValue($officeChatter)[bot.name]
+  const status = needsInput ? 'needs input' : statusText({ face, isActive: onPetStart.isActive, wander, cheers, gamePhase, leftover, pizza, noPizza, walkKind, five, yawn, ritual, taskState })
   return jsxs('div', {
-    className: cn('office-person', `is-${face}`, wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop', ritual && 'is-lookup'),
+    className: cn('office-person', `quirk-${quirk.id}`, `is-${face}`, needsInput && 'is-waiting', wander && 'is-wander', closer && 'is-closer', cheers && 'is-cheers', pizza && 'has-pizza', drop && 'is-drop', ritual && 'is-lookup'),
     style,
     role: 'button',
     tabIndex: 0,
@@ -2636,6 +2495,7 @@ function Person({ bot, look, face, wander, closer, whisper, hi, ask, bang, five,
       whisper || hi || ask || bang
         ? jsx('div', { className: cn('office-whisper', (hi || ask || bang) && 'is-hi'), children: hi ? 'hi!' : ask ? '?' : bang ? '!' : '\u2026' })
         : null,
+      chatter && chatter.until > Date.now() && face !== 'think' ? jsx('span', { className: 'office-banter', children: chatter.text }) : null,
       wander ? jsx('span', { className: 'office-ground', 'aria-hidden': true }) : null,
       pizza ? jsx(PizzaSlice, { className: 'office-slice' }) : null,
       jsx(WorkerFace, { color: look.color, image: look.image, mood: face, size: 42, name: bot.name, sad: Boolean(noPizza || leftover) && (face === 'idle' || face === 'stretch') }),
@@ -2771,6 +2631,7 @@ function usePersonHandlers(bot, roomRef, held) {
 
 function Desk({ bot, isActive, turnBusy, tasked, taskState, picked, roomRef, night, peek, now, onPick, onOpen }) {
   const look = botLook(bot)
+  const needsInput = Boolean(useValue($officeInput)[bot.name])
   const think = deskMood({ isActive, turnBusy, tasked }) === 'think'
   const handle = botHandle(bot.name)
   const seats = useValue($seats)
@@ -2824,6 +2685,7 @@ function Desk({ bot, isActive, turnBusy, tasked, taskState, picked, roomRef, nig
         className: 'office-stage',
         children: [
           jsx('div', { className: 'office-desk-top' }),
+          jsx(DeskKeepsakes, { name: bot.name }),
           note
             ? jsx('button', {
                 type: 'button',
@@ -2833,10 +2695,7 @@ function Desk({ bot, isActive, turnBusy, tasked, taskState, picked, roomRef, nig
                   event.stopPropagation()
                   void onOpen()
                 },
-                children: jsxs('svg', { viewBox: '0 0 22 18', width: 22, height: 18, 'aria-hidden': true, children: [
-                  jsx('path', { d: 'M1 3 L11 10 L21 3 V16 H1 Z', fill: '#fff8e6', stroke: '#8a7a5a', strokeWidth: 1 }),
-                  jsx('path', { d: 'M1 3 H21 L11 10 Z', fill: '#f4e9c8', stroke: '#8a7a5a', strokeWidth: 1 })
-                ] })
+                children: jsx(PropArt, { id: 'parcel' })
               })
             : null,
           night
@@ -2905,6 +2764,7 @@ function Desk({ bot, isActive, turnBusy, tasked, taskState, picked, roomRef, nig
           })
         ]
       }),
+      needsInput ? jsx('button', { type: 'button', className: 'office-input-request', onClick: onOpen, children: 'Raised hand · open question' }) : null,
       output
         ? jsx('button', {
             type: 'button',
@@ -3343,77 +3203,21 @@ function PizzaPie({ eaten }) {
 }
 
 // Back bar: a row of bottles on the shelf.
-function BarBottles() {
-  const bottles = [
-    { x: 4, h: 22, w: 7, fill: '#3d7a3a' },
-    { x: 15, h: 26, w: 7, fill: '#c98a2a' },
-    { x: 26, h: 18, w: 8, fill: '#e6dcc4' },
-    { x: 38, h: 24, w: 7, fill: '#8a2a3a' },
-    { x: 49, h: 20, w: 7, fill: '#4a86c9' },
-    { x: 60, h: 25, w: 7, fill: '#2b2b2f' },
-    { x: 71, h: 19, w: 8, fill: '#c9702c' },
-    { x: 83, h: 23, w: 7, fill: '#3d7a3a' },
-    { x: 94, h: 21, w: 7, fill: '#e6dcc4' }
-  ]
-
-  return jsx('svg', {
-    viewBox: '0 0 108 30',
-    className: 'office-bar-bottles',
-    preserveAspectRatio: 'xMidYMax meet',
-    'aria-hidden': true,
-    children: bottles.map((b, i) =>
-      jsxs('g', {
-        children: [
-          jsx('rect', { x: b.x + b.w / 2 - 1.5, y: 30 - b.h, width: 3, height: 6, rx: 1, fill: b.fill }),
-          jsx('rect', { x: b.x, y: 30 - b.h + 5, width: b.w, height: b.h - 5, rx: 1.5, fill: b.fill }),
-          jsx('rect', { x: b.x + 1.2, y: 30 - b.h + 8, width: 1.4, height: b.h - 11, rx: .7, fill: 'rgba(255,255,255,.35)' }),
-          jsx('rect', { x: b.x + 1, y: 30 - b.h + 11, width: b.w - 2, height: 5, rx: .5, fill: 'rgba(255,255,255,.55)' })
-        ]
-      }, i)
-    )
-  })
-}
-
-// Beer taps and a poured pint on the counter.
-function BarTaps() {
-  return jsxs('svg', {
-    viewBox: '0 0 64 30',
-    width: 64,
-    height: 30,
-    className: 'office-bar-taps',
-    'aria-hidden': true,
-    children: [
-      jsx('rect', { x: 14, y: 12, width: 26, height: 18, rx: 3, fill: '#8f949c' }),
-      jsx('rect', { x: 16, y: 13, width: 6, height: 16, rx: 2, fill: 'rgba(255,255,255,.35)' }),
-      jsx('rect', { x: 20, y: 2, width: 3, height: 12, rx: 1.5, fill: '#2b2b2f' }),
-      jsx('circle', { cx: 21.5, cy: 3, r: 2.6, fill: '#c9302c' }),
-      jsx('rect', { x: 31, y: 2, width: 3, height: 12, rx: 1.5, fill: '#2b2b2f' }),
-      jsx('circle', { cx: 32.5, cy: 3, r: 2.6, fill: '#3d7a3a' }),
-      jsx('rect', { x: 46, y: 12, width: 12, height: 18, rx: 1.5, fill: '#f2b53a' }),
-      jsx('rect', { x: 46, y: 12, width: 12, height: 18, rx: 1.5, fill: 'none', stroke: 'rgba(255,255,255,.55)', strokeWidth: 1 }),
-      jsx('ellipse', { cx: 52, cy: 12, rx: 7, ry: 3.2, fill: '#fff' }),
-      jsx('circle', { cx: 56.5, cy: 10, r: 1.6, fill: '#fff' })
-    ]
-  })
-}
-
 function OfficeBar({ count, now }) {
   const n = Math.min(6, Math.max(3, count || 3))
-  const backdrop = useValue($backdrop)
   const pizza = useValue($pizza)
-  const parlor = backdrop === 'pizza'
-  const ding = parlor && pizza?.at && !pizza.winner && (now || 0) - pizza.at < 1400
+  const ding = pizza?.at && !pizza.winner && (now || 0) - pizza.at < 1400
 
   return jsxs('aside', {
     className: 'office-bar',
     children: [
-      jsx('div', { className: 'office-bar-sign', children: parlor ? 'Pizza' : 'Bar' }),
+      jsx('div', { className: 'office-bar-sign', children: 'Pizza break' }),
       ding ? jsx('div', { className: 'office-ding office-chip', children: 'ding!' }) : null,
-      jsx('div', { className: 'office-bar-shelf', 'aria-hidden': true, children: parlor ? null : jsx(BarBottles, {}) }),
+      jsx('div', { className: 'office-bar-shelf', 'aria-hidden': true, children: null }),
       jsx('div', {
         className: 'office-bar-counter',
         'aria-hidden': true,
-        children: parlor ? jsx(PizzaPie, { eaten: Boolean(pizza?.winner) }) : jsx(BarTaps, {})
+        children: jsx(PizzaPie, { eaten: Boolean(pizza?.winner) })
       }),
       jsx('div', {
         className: 'office-bar-stools',
@@ -3426,24 +3230,11 @@ function OfficeBar({ count, now }) {
 }
 
 function FloorTools({ roster, jobs, activeProfile, turnBusy, roomRef, idleCount }) {
-  const backdrop = useValue($backdrop)
   const game = useValue($game)
 
   return jsxs('div', {
     className: 'office-tools',
     children: [
-      jsx('button', {
-        type: 'button',
-        className: 'office-tool',
-        title: 'Change the room',
-        onClick: () => {
-          const next = nextBackdrop($backdrop.get())
-          $backdrop.set(next)
-          savePref('backdrop', next)
-          tap()
-        },
-        children: backdrop
-      }),
       jsx('button', {
         type: 'button',
         className: cn('office-tool', game && 'is-on'),
@@ -3523,52 +3314,9 @@ function tallyTitle(tally, trophies, roster) {
 }
 
 function Ambience({ backdrop, tally, sky, roster, trophies }) {
-  const bits = []
-
-  bits.push(jsx(EmployeeOfMonth, { roster: roster || [] }, 'eom'))
-
-  if (sky && backdrop === 'garden') {
-    bits.push(jsx(SunMoon, { sky }, 'sunmoon'))
-  }
-
-  if (sky && (backdrop === 'carpet' || backdrop === 'loft')) {
-    bits.push(jsx(WallWindow, { sky }, 'window'))
-  }
-
-  if (tally > 0) {
-    bits.push(jsx('div', { className: 'office-tally office-chip', title: tallyTitle(tally, trophies, roster), children: `${tally} done` }, 'tally'))
-  }
-
-  if (backdrop === 'garden') {
-    bits.push(
-      jsx('svg', { className: 'office-butterfly is-a', viewBox: '0 0 20 14', width: 28, height: 20, children: jsxs('g', { children: [
-        jsx('ellipse', { className: 'office-wing', cx: 6, cy: 7, rx: 6, ry: 5, fill: '#f6a5c0' }),
-        jsx('ellipse', { className: 'office-wing is-r', cx: 14, cy: 7, rx: 6, ry: 5, fill: '#f6a5c0' }),
-        jsx('rect', { x: 9, y: 2, width: 2, height: 10, rx: 1, fill: '#4a3a3a' })
-      ] }) }, 'b1'),
-      jsx('svg', { className: 'office-butterfly is-b', viewBox: '0 0 20 14', width: 22, height: 15, children: jsxs('g', { children: [
-        jsx('ellipse', { className: 'office-wing', cx: 6, cy: 7, rx: 6, ry: 5, fill: '#8fd0ff' }),
-        jsx('ellipse', { className: 'office-wing is-r', cx: 14, cy: 7, rx: 6, ry: 5, fill: '#8fd0ff' }),
-        jsx('rect', { x: 9, y: 2, width: 2, height: 10, rx: 1, fill: '#4a3a3a' })
-      ] }) }, 'b2')
-    )
-  }
-
-  if (backdrop === 'nightclub') {
-    bits.push(jsx('div', { className: 'office-sweep' }, 'sweep'))
-  }
-
-  if (backdrop === 'pizza') {
-    bits.push(jsxs('svg', { className: 'office-oven', viewBox: '0 0 44 50', width: 44, height: 50, children: [
-      jsx('rect', { x: 2, y: 8, width: 40, height: 42, rx: 4, fill: '#8a5a3a' }),
-      jsx('rect', { x: 2, y: 8, width: 40, height: 6, rx: 3, fill: '#a87048' }),
-      jsx('rect', { x: 14, y: 2, width: 16, height: 8, rx: 2, fill: '#5a3a26' }),
-      jsx('path', { d: 'M8 42 V30 A14 12 0 0 1 36 30 V42 Z', fill: '#2a1810' }),
-      jsx('path', { className: 'office-oven-fire', d: 'M12 42 V32 A10 9 0 0 1 32 32 V42 Z', fill: '#ff8a2a' }),
-      jsx('rect', { x: 6, y: 42, width: 32, height: 4, rx: 1, fill: '#5a3a26' })
-    ] }, 'oven'))
-  }
-
+  const bits = [jsx(EmployeeOfMonth, { roster: roster || [] }, 'eom')]
+  if (sky) bits.push(jsx(WallWindow, { sky }, 'window'))
+  if (tally > 0) bits.push(jsx('div', { className: 'office-tally office-chip', title: tallyTitle(tally, trophies, roster), children: `${tally} done` }, 'tally'))
   if (backdrop === 'carpet') {
     bits.push(jsxs('svg', { className: 'office-cooler', viewBox: '0 0 22 52', width: 22, height: 52, children: [
       jsx('rect', { x: 4, y: 20, width: 14, height: 30, rx: 2, fill: '#e9ecf0' }),
@@ -3580,22 +3328,10 @@ function Ambience({ backdrop, tally, sky, roster, trophies }) {
     ] }, 'cooler'))
   }
 
-  if (backdrop === 'loft') {
-    bits.push(jsxs('svg', { className: 'office-pendant', viewBox: '0 0 30 40', width: 30, height: 40, children: [
-      jsx('rect', { x: 14, y: 0, width: 2, height: 18, fill: '#3a3a3a' }),
-      jsx('path', { d: 'M4 30 L11 18 H19 L26 30 Z', fill: '#3f3f44' }),
-      jsx('ellipse', { cx: 15, cy: 30, rx: 11, ry: 2.5, fill: '#ffe4a8' }),
-      jsx('circle', { cx: 15, cy: 27, r: 3, fill: '#fff2c8' })
-    ] }, 'pendant'))
-  }
 
   return jsx(Fragment, { children: bits })
 }
 
-// First run only. One bubble that says what the toy does. Closing it, or
-// doing any of the things it mentions, puts it away for good.
-// Onboarding in two moments. First: give someone a task (points at the task
-// bar). After the first result comes back: pet them, and try one game.
 function HintBubble({ roster, stage, onClose, selectedName }) {
   const target = roster.find(row => row.name === selectedName) || roster[0]
   const first = target ? botLook(target).title : 'a bot'
@@ -3858,7 +3594,7 @@ function Planes() {
         height: 16,
         className: 'office-plane',
         style: { left: p.from.x, top: p.from.y, '--dx': `${dx}px`, '--dy': `${dy}px`, '--rot': `${rot}deg` },
-        children: jsx('path', { d: 'M1 8 L23 1 L15 15 L11 10 Z M11 10 L23 1', fill: '#f4f4f8', stroke: '#6b6f7a', strokeWidth: 1, strokeLinejoin: 'round' })
+        children: jsx('path', { d: 'M1 2 H23 V14 H1 Z M1 2 L12 9 L23 2 M1 14 L8 8 M23 14 L16 8', fill: '#fff0d3', stroke: '#8c7454', strokeWidth: 1, strokeLinejoin: 'round' })
       }, p.id)
     })
   })
@@ -3963,6 +3699,368 @@ function TaskBar({ roster, activeProfile }) {
   })
 }
 
+// Office life is local stagecraft. It never dispatches work or invents job events.
+const OFFICE_QUIRKS = [
+  { id: 'mugs', name: 'Mug collector', line: 'That is my backup backup mug.', prop: 'coffee' },
+  { id: 'tidy', name: 'Compulsive tidier', line: 'Who moved this three pixels?', prop: 'bin' },
+  { id: 'champion', name: 'Victory enthusiast', line: 'I would like to thank the keyboard.', prop: 'chair' },
+  { id: 'quiet', name: 'Quiet achiever', line: 'I left it on your desk.', prop: 'cat' },
+  { id: 'curious', name: 'Button investigator', line: 'It probably does something sensible.', prop: 'fan' }
+]
+const OFFICE_FURNITURE = [
+  { id: 'coffee', name: 'Coffee machine', unlock: 0, x: 17, y: 79 },
+  { id: 'fan', name: 'Desk fan', unlock: 0, x: 35, y: 81 },
+  { id: 'chair', name: 'Rolling chair', unlock: 0, x: 53, y: 78 },
+  { id: 'bin', name: 'Paper bin', unlock: 0, x: 69, y: 83 },
+  { id: 'cat', name: 'Office cat', unlock: 0, x: 83, y: 78 },
+  { id: 'certificate', name: 'First delivery certificate', unlock: 1, x: 12, y: 63 },
+  { id: 'aquarium', name: 'Fish tank', unlock: 5, x: 31, y: 65 },
+  { id: 'button', name: 'Suspicious button', unlock: 10, x: 66, y: 67 },
+  { id: 'pizza-box', name: 'Pizza hall of fame', unlock: 20, x: 83, y: 63 }
+]
+const OFFICE_INCIDENTS = {
+  boss: { title: 'The boss is making the rounds', prop: 'chair', lines: ['Someone has opened the manager\'s door.', 'A quick look at the first desk. Very serious clipboard work.', 'On to the next desk. The coffee mug is under inspection.', 'Everything appears to be approximately in order.', 'Inspection complete. The clipboard returns upstairs.'] },
+  printer: { title: 'The printer has opinions', prop: 'bin', lines: ['The printer has requested more paper. All of it.', 'The fan catches a page. The chair joins the chase.', 'Paper collected. The printer has been asked to reflect.'] },
+  delivery: { title: 'A modest plant delivery', prop: 'coffee', lines: ['A package marked SMALL PLANT has arrived.', 'It is now taller than the delivery bot.', 'The plant has been appointed head of shade.'] },
+  ufo: { title: 'An unscheduled visitor', prop: 'cat', lines: ['A tiny UFO is inspecting the wall portrait.', 'The crew offers a pizza slice in exchange.', 'Portrait returned. Diplomatic relations taste of cheese.'] },
+  mouse: { title: 'Mouse on the loose', prop: 'cat', lines: ['A wind-up mouse makes a break for it.', 'The cat pursues. The rolling chair provides transport.', 'Mouse recovered. The cat is taking the credit.'] },
+  ice: { title: 'Extremely polished carpet', prop: 'chair', lines: ['The carpet is temporarily ice.', 'Nobody has a license for this chair.', 'Traction restored. Dignity will take longer.'] },
+  ball: { title: 'Indoor volleyball committee', prop: 'fan', lines: ['A beach ball enters the meeting.', 'The fan has a surprisingly good serve.', 'Motion to play again carried unanimously.'] },
+  lunch: { title: 'An emergency lunch', prop: 'coffee', lines: ['The lunch bell has been rung.', 'The committee assembles beside the pizza counter.', 'Lunch adjourned. Crumbs remain in the minutes.'] },
+  gravity: { title: 'Gravity is on break', prop: 'chair', lines: ['Gravity has stepped out.', 'Please keep a firm grip on your mug.', 'Everyone is down to earth again. Mostly.'] }
+}
+const $officeLife = atom({ quirks: {}, props: {}, stories: [], chaos: 'gentle' })
+const $officeIncident = atom(null)
+const $officeChatter = atom({})
+const $officeArrange = atom(false)
+let officeNextIncident = 0
+let officeNextQuirk = 0
+
+function clearOfficeInput(name) {
+  if (!$officeInput.get()[name]) return
+  const next = { ...$officeInput.get() }
+  delete next[name]
+  $officeInput.set(next)
+}
+
+function endOfficeIncident(now = Date.now()) {
+  const incident = $officeIncident.get()
+  if (!incident) return
+  for (const name of incident.cast) {
+    patchFx(name, { lingerUntil: 0 })
+    const walk = $walks.get()[name]
+    if (walk?.kind === 'visit') {
+      const t = easeInOut(Math.max(0, Math.min(1, (now - walk.t0) / Math.max(1, walk.ms))))
+      saveSeats({ ...$seats.get(), [name]: { x: walk.from.x + (walk.to.x - walk.from.x) * t, y: walk.from.y + (walk.to.y - walk.from.y) * t } })
+      const walks = { ...$walks.get() }
+      delete walks[name]
+      $walks.set(walks)
+    }
+  }
+  $officeChatter.set({})
+  $officeIncident.set(null)
+  officeNextIncident = now + ($officeLife.get().chaos === 'chaos' ? 45000 : 180000)
+}
+
+function incidentLine(incident) {
+  const def = OFFICE_INCIDENTS[incident.kind]
+  if (incident.kind === 'boss') return def.lines[incident.phase]
+  const visible = id => officePropPosition(id).visible !== false
+  if (incident.phase === 2 && incident.kind === 'mouse' && !visible('cat')) return 'Mouse recovered. The office has survived another experiment.'
+  if (incident.phase !== 1) return def.lines[incident.phase]
+  if (!incident.cast.length) return 'Everyone is working. The office objects are handling this one.'
+  if (incident.kind === 'mouse' && (!visible('cat') || !visible('chair'))) return 'The mouse evades the office search party.'
+  if (incident.kind === 'printer' && (!visible('fan') || !visible('chair'))) return 'The paper is piling up. A search party enters the pile.'
+  if (incident.kind === 'ball' && !visible('fan')) return 'The office practices a very informal serve.'
+  return def.lines[1]
+}
+
+function handleOfficeInput(name, row, event) {
+  if (!jobIsActive(row)) return
+  const id = event.payload?.request_id
+  if (['approval.request', 'clarify.request', 'mcp.setup.request', 'sudo.request', 'secret.request'].includes(event.type) && typeof id === 'string' && id) {
+    $officeInput.set({ ...$officeInput.get(), [name]: { id, job: row.id } })
+  } else if (event.type === 'message.complete' || event.type === 'message.start') {
+    clearOfficeInput(name)
+  } else if (['clarify.expire', 'tool.complete'].includes(event.type) && $officeInput.get()[name]?.id === (id || event.payload?.tool_id)) {
+    clearOfficeInput(name)
+  }
+}
+
+function normalizeOfficeLife(raw) {
+  const value = raw && typeof raw === 'object' ? raw : {}
+  const quirks = Object.fromEntries(Object.entries(value.quirks || {}).filter(([name, id]) => name.length < 200 && OFFICE_QUIRKS.some(q => q.id === id)))
+  const props = {}
+  for (const p of OFFICE_FURNITURE) {
+    const saved = value.props?.[p.id]
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      props[p.id] = { x: Math.max(6, Math.min(94, saved.x)), y: Math.max(48, Math.min(88, saved.y)), visible: saved.visible !== false }
+    }
+  }
+  const stories = Array.isArray(value.stories) ? value.stories.filter(s => s && Number.isFinite(s.at) && s.at >= 0 && s.at <= 8640000000000000 && typeof s.text === 'string').slice(-60).map(s => ({
+    at: s.at, type: typeof s.type === 'string' ? s.type : 'work', text: s.text.slice(0, 500),
+    cast: Array.isArray(s.cast) ? s.cast.filter(n => typeof n === 'string').slice(0, 3) : [],
+    scene: Object.hasOwn(OFFICE_INCIDENTS, s.scene) ? s.scene : null,
+    snapshot: Array.isArray(s.snapshot) ? s.snapshot.filter(p => OFFICE_FURNITURE.some(f => f.id === p?.id) && Number.isFinite(p.x) && Number.isFinite(p.y)).slice(0, 9).map(p => ({ id: p.id, x: Math.max(6, Math.min(94, p.x)), y: Math.max(48, Math.min(88, p.y)) })) : []
+  })) : []
+  return { quirks, props, stories, chaos: ['quiet', 'gentle', 'chaos'].includes(value.chaos) ? value.chaos : 'gentle' }
+}
+
+function saveOfficeLife(next) {
+  $officeLife.set(next)
+  savePref('officeLife', next)
+}
+
+function officeQuirk(name, life = $officeLife.get()) {
+  return OFFICE_QUIRKS.find(q => q.id === life.quirks[name]) || OFFICE_QUIRKS[nameHash(name) % OFFICE_QUIRKS.length]
+}
+
+function rememberOffice(type, text, cast = [], scene = null) {
+  const life = $officeLife.get()
+  const snapshot = OFFICE_FURNITURE.filter(p => life.props[p.id]?.visible ?? p.unlock === 0).map(p => ({ id: p.id, x: life.props[p.id]?.x ?? p.x, y: life.props[p.id]?.y ?? p.y }))
+  saveOfficeLife({ ...life, stories: [...life.stories, { at: Date.now(), type, text, cast: cast.slice(0, 3), scene, snapshot }].slice(-60) })
+}
+
+function officeSay(name, text, ms = 4500) {
+  $officeChatter.set({ ...$officeChatter.get(), [name]: { text, until: Date.now() + ms } })
+}
+
+function officePropPosition(id) {
+  const p = OFFICE_FURNITURE.find(p => p.id === id)
+  return { ...p, ...$officeLife.get().props[id] }
+}
+
+function officeCast(roster, jobs, activeProfile, turnBusy) {
+  const players = new Set($game.get()?.players || [])
+  return idleBotNames(roster, jobs, activeProfile, turnBusy).filter(name => !players.has(name) && $drag.get()?.name !== name && !$walks.get()[name])
+}
+
+function gatherOffice(cast, id, roomEl) {
+  if (!roomEl) return
+  const element = roomEl.querySelector(`[data-office-prop="${id}"]`)
+  const anchor = element ? faceOn(roomEl, element, 25) : null
+  if (!anchor) return
+  cast.forEach((name, i) => {
+    const x = Math.min(roomEl.scrollWidth - 45, Math.max(20, anchor.x + (i - 1) * 40))
+    const y = Math.max(WALL_H + 40, anchor.y)
+    startWalk(name, { x, y }, roomEl, 'visit')
+    patchFx(name, { nap: false, lingerUntil: Date.now() + 15000 })
+  })
+}
+
+function beginOfficeIncident(kind, roster, jobs, activeProfile, turnBusy, roomEl) {
+  if ($officeIncident.get() || !Object.hasOwn(OFFICE_INCIDENTS, kind)) return false
+  const cast = officeCast(roster, jobs, activeProfile, turnBusy).slice(0, 3)
+  const def = OFFICE_INCIDENTS[kind]
+  if (kind === 'boss') {
+    const door = roomEl?.querySelector('.office-door')
+    const entry = door ? faceOn(roomEl, door, -32) : { x: 300, y: 80 }
+    const desks = roster.slice(0, 2).map(bot => {
+      const element = roomEl?.querySelector(`[data-desk=${JSON.stringify(bot.name)}] .office-stage`)
+      const point = element ? faceOn(roomEl, element, -48) : entry
+      return { name: bot.name, ...point }
+    })
+    $officeIncident.set({ kind, cast, at: Date.now(), phase: 0, tour: [entry, desks[0] || entry, desks[1] || desks[0] || entry, entry] })
+    for (const name of cast) {
+      startWalkHome(name, roomEl)
+      officeSay(name, officeQuirk(name).id === 'mugs' ? 'Quick. Hide the extra mugs.' : 'I was just about to do that.')
+    }
+    return true
+  }
+  $officeIncident.set({ kind, cast, at: Date.now(), phase: 0 })
+  gatherOffice(cast, def.prop, roomEl)
+  if (cast[0]) officeSay(cast[0], 'I will investigate.', 4000)
+  if (kind === 'lunch') $pizza.set(freshPizza(Date.now()))
+  return true
+}
+
+function tickOfficeLife(now, roster, jobs, activeProfile, turnBusy, roomEl) {
+  if (!roomEl || (typeof document !== 'undefined' && document.hidden)) return
+  const incident = $officeIncident.get()
+  const available = idleBotNames(roster, jobs, activeProfile, turnBusy)
+  for (const [name, walk] of Object.entries($walks.get())) {
+    if (walk.kind === 'visit' && !available.includes(name)) startWalkHome(name, roomEl)
+  }
+  if (incident) {
+    const lastPhase = OFFICE_INCIDENTS[incident.kind].lines.length - 1
+    const phase = Math.min(lastPhase, Math.floor((now - incident.at) / 4000))
+    if (now - incident.at >= (lastPhase + 1) * 4000) {
+      rememberOffice('incident', incidentLine({ ...incident, phase: lastPhase }), incident.cast, incident.kind)
+      endOfficeIncident(now)
+    } else if (phase !== incident.phase) {
+      const cast = incident.cast.filter(n => available.includes(n) && $drag.get()?.name !== n && !($game.get()?.players || []).includes(n))
+      $officeIncident.set({ ...incident, phase })
+      if (incident.kind === 'boss') {
+        const visited = incident.tour?.[phase < 2 ? 1 : 2]?.name
+        if (visited && cast.includes(visited)) officeSay(visited, officeQuirk(visited).id === 'quiet' ? 'The result is on your desk.' : 'This is my professional face.')
+        return
+      }
+      if (cast[phase % Math.max(1, cast.length)]) officeSay(cast[phase % cast.length], phase === 1 ? officeQuirk(cast[phase % cast.length]).line : 'Nothing to report. Absolutely nothing.')
+      if (phase === 1) gatherOffice(cast, incident.kind === 'lunch' ? 'cat' : 'chair', roomEl)
+      if (phase === 2 && incident.kind === 'lunch') cast.forEach(name => startWalkToBar(name, roomEl))
+    }
+    return
+  }
+  const chaos = $officeLife.get().chaos
+  if (!officeNextIncident) officeNextIncident = now + 90000
+  if (chaos !== 'quiet' && !$officeArrange.get() && !$game.get() && roster.length && now >= officeNextIncident) {
+    const kinds = available.length ? ['boss', 'printer', 'boss', 'delivery', 'ufo'] : ['boss']
+    beginOfficeIncident(kinds[Math.floor(Math.random() * kinds.length)], roster, jobs, activeProfile, turnBusy, roomEl)
+  }
+  if (!officeNextQuirk) officeNextQuirk = now + 24000
+  if (chaos !== 'quiet' && !$officeArrange.get() && now >= officeNextQuirk) {
+    officeNextQuirk = now + 24000
+    const cast = officeCast(roster, jobs, activeProfile, turnBusy)
+    if (!cast.length) return
+    const name = cast[Math.floor(Math.random() * cast.length)]
+    const q = officeQuirk(name)
+    if (officePropPosition(q.prop).visible !== false) gatherOffice([name], q.prop, roomEl)
+    const previous = $officeLife.get().stories.filter(s => s.scene && s.cast.includes(name)).at(-1)
+    officeSay(name, previous ? `For the record, ${OFFICE_INCIDENTS[previous.scene].title.toLowerCase()} was not my idea.` : q.line)
+    if (cast[1] && cast[1] !== name) officeSay(cast[1], q.id === 'mugs' ? 'We have run out of cupboard.' : 'Putting that in the minutes.')
+  }
+}
+
+function bossPosition(tour, elapsed) {
+  const t = Math.max(0, Math.min(20000, elapsed))
+  const segment = t < 8000 ? 0 : t < 16000 ? 1 : 2
+  const offset = segment === 0 ? 0 : segment === 1 ? 8000 : 16000
+  const progress = easeInOut(Math.min(1, (t - offset) / 3400))
+  const from = tour[segment], to = tour[segment + 1]
+  return { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress, walking: progress < 1, facing: to.x < from.x ? -1 : 1 }
+}
+
+function OfficeBoss() {
+  const incident = useValue($officeIncident)
+  const now = usePulse(incident?.kind === 'boss' ? 50 : 1000)
+  if (incident?.kind !== 'boss' || !incident.tour) return null
+  const pose = reducedMotion()
+    ? { ...incident.tour[incident.phase < 2 ? 1 : incident.phase < 4 ? 2 : 3], walking: false }
+    : bossPosition(incident.tour, now - incident.at)
+  return jsxs('div', { className: 'office-boss', style: { left: pose.x, top: pose.y }, role: 'img', 'aria-label': 'The boss inspecting the desks', children: [
+    jsx('span', { className: 'office-boss-hair' }),
+    jsx(WorkerFace, { color: '#d5ae8c', mood: 'idle', size: 42, name: 'office-manager' }),
+    jsx('span', { className: 'office-boss-glasses' }),
+    jsx('span', { className: 'office-clipboard' }),
+    jsx('span', { className: 'office-boss-label', children: pose.walking ? 'Making the rounds' : 'A few notes...' })
+  ] })
+}
+
+function PropArt({ id }) {
+  // Small physical props share the room's existing paper-doll construction.
+  return jsxs('span', { className: `office-object art-${id}`, 'aria-hidden': true, children: [jsx('i', {}), jsx('b', {}), jsx('em', {}), jsx('small', {})] })
+}
+
+function DeskKeepsakes({ name }) {
+  const life = useValue($officeLife)
+  const q = officeQuirk(name, life)
+  return jsx('div', { className: `office-keepsakes keepsake-${q.id}`, title: q.name, 'aria-label': q.name,
+    children: Array.from({ length: q.id === 'mugs' ? 3 : 1 }, (_, i) => jsx(PropArt, { id: q.id === 'mugs' ? 'mug' : q.id === 'tidy' ? 'certificate' : q.id === 'champion' ? 'button' : q.id === 'quiet' ? 'cat' : 'fan' }, i)) })
+}
+
+function OfficeFurniture({ item, roomRef, onUse }) {
+  const arrange = useValue($officeArrange)
+  const gesture = useRef(null)
+  const move = event => {
+    if (!gesture.current || !roomRef.current) return
+    const box = event.currentTarget.parentElement.getBoundingClientRect()
+    const next = { x: Math.max(6, Math.min(94, (event.clientX - box.left) / box.width * 100)), y: Math.max(48, Math.min(88, 48 + ((event.clientY - box.top) / box.height * 100 - 15) / 65 * 40)), visible: true }
+    const life = $officeLife.get()
+    $officeLife.set({ ...life, props: { ...life.props, [item.id]: next } })
+  }
+  return jsxs('button', {
+    type: 'button', className: 'office-furniture', 'data-office-prop': item.id, style: { left: `${item.x}%`, top: `${15 + (item.y - 48) / 40 * 65}%` },
+    title: arrange ? `${item.name}: drag or use arrow keys to move` : `Use ${item.name}`,
+    'aria-label': arrange ? `Move ${item.name}` : `Use ${item.name}`,
+    onPointerDown: event => {
+      event.stopPropagation()
+      if (arrange) { gesture.current = true; event.currentTarget.setPointerCapture(event.pointerId) }
+    },
+    onPointerMove: move,
+    onPointerUp: () => { if (gesture.current) saveOfficeLife($officeLife.get()); gesture.current = null },
+    onPointerCancel: () => { gesture.current = null; saveOfficeLife($officeLife.get()) },
+    onClick: event => { event.stopPropagation(); if (!arrange) onUse(item.id) },
+    onKeyDown: event => {
+      if (!arrange || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+      event.preventDefault(); event.stopPropagation()
+      const life = $officeLife.get()
+      const dx = event.key === 'ArrowLeft' ? -2 : event.key === 'ArrowRight' ? 2 : 0
+      const dy = event.key === 'ArrowUp' ? -2 : event.key === 'ArrowDown' ? 2 : 0
+      saveOfficeLife({ ...life, props: { ...life.props, [item.id]: { x: Math.max(6, Math.min(94, item.x + dx)), y: Math.max(48, Math.min(88, item.y + dy)), visible: true } } })
+    },
+    children: [jsx(PropArt, { id: item.id }), jsx('span', { className: 'office-furniture-label', children: item.name })]
+  })
+}
+
+function OfficeLifeScene({ roster, jobs, activeProfile, turnBusy, roomRef }) {
+  const life = useValue($officeLife)
+  const incident = useValue($officeIncident)
+  const arrange = useValue($officeArrange)
+  const useProp = id => {
+    const kinds = { fan: 'ball', chair: 'ice', bin: 'printer', cat: 'mouse', coffee: 'lunch', button: 'gravity', aquarium: 'ufo', certificate: 'delivery', 'pizza-box': 'lunch' }
+    beginOfficeIncident(kinds[id], roster, jobs, activeProfile, turnBusy, roomRef.current)
+  }
+  return jsxs('div', { className: cn('office-life-scene', arrange && 'is-arranging', incident && `incident-${incident.kind}`, incident && `phase-${incident.phase}`), children: [
+    jsx('div', { className: 'office-coffee-rug', 'aria-hidden': true }),
+    jsxs('div', { className: 'office-lounge-sofa', 'aria-hidden': true, children: [jsx('i', {}), jsx('b', {})] }),
+    ...OFFICE_FURNITURE.filter(p => life.props[p.id]?.visible ?? p.unlock === 0).map(p => jsx(OfficeFurniture, { item: { ...p, ...life.props[p.id] }, roomRef, onUse: useProp }, p.id)),
+    incident ? jsxs('div', { className: 'office-incident-art', 'aria-hidden': true, children: [jsx('span', { className: 'office-visiting-object' }), ...Array.from({ length: 6 }, (_, i) => jsx('i', { style: { '--n': i } }, i))] }) : null,
+    jsx('span', { className: 'office-floor-plaque', children: 'Please feed the ideas. And the cat.' })
+  ] })
+}
+
+function OfficeLife({ roster, jobs, activeProfile, turnBusy, roomRef }) {
+  const life = useValue($officeLife)
+  const incident = useValue($officeIncident)
+  const trophies = useValue($trophies)
+  const arrange = useValue($officeArrange)
+  const [panel, setPanel] = useState(null)
+  const [story, setStory] = useState(null)
+  const now = usePulse(500)
+  const total = Object.values(trophies).reduce((a, b) => a + b, 0)
+  const week = useValue($week)
+  useEffect(() => {
+    tickOfficeLife(now, roster, jobs, activeProfile, turnBusy, roomRef.current)
+  }, [now, roster, jobs, activeProfile, turnBusy])
+  useEffect(() => {
+    const room = roomRef.current
+    if (room) room.dataset.incident = incident?.kind || ''
+    return () => { if (room) delete room.dataset.incident }
+  }, [incident?.kind])
+  useEffect(() => {
+    const root = roomRef.current?.closest('.office-root')
+    const visibility = () => {
+      if (root) root.dataset.officeHidden = String(document.hidden)
+      if (document.hidden) endOfficeIncident()
+    }
+    document.addEventListener('visibilitychange', visibility)
+    visibility()
+    return () => { document.removeEventListener('visibilitychange', visibility); if (root) delete root.dataset.officeHidden }
+  }, [])
+  useEffect(() => () => { endOfficeIncident(); $officeArrange.set(false); $officeChatter.set({}); officeNextIncident = 0; officeNextQuirk = 0 }, [])
+  const action = (label, click, extra = {}) => jsx('button', { type: 'button', className: 'office-life-button', onClick: click, ...extra, children: label }, label)
+  const toggle = name => { setPanel(panel === name ? null : name); $officeArrange.set(false) }
+  return jsxs('section', { className: 'office-life', 'aria-label': 'Life in the office', children: [
+    jsxs('div', { className: 'office-life-toolbar', children: [
+      jsx('span', { className: 'office-life-caption', children: 'After hours, during hours.' }),
+      action('Toy drawer', () => toggle('toys'), { 'aria-expanded': panel === 'toys' }),
+      action('Furnish', () => toggle('furnish'), { 'aria-expanded': panel === 'furnish' }),
+      arrange ? action('Finish arranging', () => $officeArrange.set(false)) : null,
+      action('Personalities', () => toggle('people'), { 'aria-expanded': panel === 'people' }),
+      action('Office newspaper', () => toggle('paper'), { 'aria-expanded': panel === 'paper' }),
+      jsxs('label', { className: 'office-chaos', children: ['Office energy ', jsxs('select', { value: life.chaos, onChange: e => { saveOfficeLife({ ...life, chaos: e.target.value }); officeNextIncident = 0 }, children: [jsx('option', { value: 'quiet', children: 'Quiet' }), jsx('option', { value: 'gentle', children: 'A little odd' }), jsx('option', { value: 'chaos', children: 'Chaos' })] })] })
+    ] }),
+    incident ? jsxs('div', { className: 'office-incident-caption', role: 'status', children: [jsx('strong', { children: OFFICE_INCIDENTS[incident.kind].title }), jsx('span', { children: incidentLine(incident) }), action('End scene', () => endOfficeIncident(now))] }) : null,
+    panel ? jsxs('div', { className: 'office-life-panel', onKeyDown: e => { if (e.key === 'Escape') { setPanel(null); $officeArrange.set(false) } }, children: [
+      action('Close', () => { setPanel(null); $officeArrange.set(false) }, { className: 'office-panel-close' }),
+      panel === 'toys' ? jsxs(Fragment, { children: [jsx('h2', { children: 'For research purposes.' }), jsx('p', { children: 'Short office scenes. Busy bots keep working.' }), jsx('div', { className: 'office-toy-list', children: Object.entries({ mouse: 'Release wind-up mouse', ice: 'Ice the carpet', ball: 'Drop beach ball', lunch: 'Ring lunch bell', gravity: 'Switch off gravity', printer: 'Provoke printer', delivery: 'Order enormous plant', ufo: 'Invite tiny UFO', boss: 'Call the boss' }).map(([id, label]) => action(label, () => { if (beginOfficeIncident(id, roster, jobs, activeProfile, turnBusy, roomRef.current)) setPanel(null) }, { disabled: Boolean(incident) })) })] }) : null,
+      panel === 'furnish' ? jsxs(Fragment, { children: [jsx('h2', { children: 'Make yourself at home.' }), jsx('p', { children: `${total} completed task${total === 1 ? '' : 's'}. Keepsakes unlock as real work gets delivered.` }), action(arrange ? 'Finish arranging' : 'Arrange furniture', () => { $officeArrange.set(!arrange); if (!arrange) setPanel(null) }, { 'aria-pressed': arrange }), arrange ? jsx('p', { children: 'Drag an object on the carpet, or focus it and use the arrow keys.' }) : null, jsx('div', { className: 'office-furniture-list', children: OFFICE_FURNITURE.map(p => { const visible = life.props[p.id]?.visible ?? p.unlock === 0; return action(`${visible ? 'Put away' : 'Place'} ${p.name}${total < p.unlock && !visible ? ` · ${p.unlock} tasks` : ''}`, () => saveOfficeLife({ ...life, props: { ...life.props, [p.id]: { ...officePropPosition(p.id), visible: !visible } } }), { disabled: !visible && total < p.unlock }) }) })] }) : null,
+      panel === 'people' ? jsxs(Fragment, { children: [jsx('h2', { children: 'Every desk has a character.' }), jsx('p', { children: 'Quirks change desk objects, idle habits, reactions, and celebrations.' }), ...roster.map(bot => jsxs('label', { className: 'office-personality-row', children: [jsx('span', { children: botLook(bot).title }), jsxs('select', { value: officeQuirk(bot.name, life).id, onChange: e => saveOfficeLife({ ...life, quirks: { ...life.quirks, [bot.name]: e.target.value } }), children: OFFICE_QUIRKS.map(q => jsx('option', { value: q.id, children: q.name }, q.id)) })] }, bot.name))] }) : null,
+      panel === 'paper' ? jsxs('article', { className: 'office-newspaper', children: [jsx('h2', { children: 'The Carpet Chronicle' }), jsx('p', { className: 'office-paper-date', children: new Date(now).toLocaleDateString(undefined, { dateStyle: 'full' }) }), jsx('p', { children: week && week.start === weekStart(new Date(now)) ? weekLine(week) || 'A quiet week on the carpet.' : 'A fresh week on the carpet.' }), story ? jsxs('div', { className: 'office-memory', children: [jsx('strong', { children: story.scene ? OFFICE_INCIDENTS[story.scene].title : 'From the office records' }), jsx('p', { children: story.text }), jsx('div', { className: 'office-memory-scene', 'aria-label': 'Saved furniture arrangement', children: (story.snapshot || []).map(p => jsx('span', { style: { position: 'absolute', left: `${p.x}%`, top: `${(p.y - 45) * 1.5}%` }, children: jsx(PropArt, { id: p.id }) }, p.id)) }), jsx('p', { children: story.cast.length ? `Present: ${story.cast.join(', ')}` : 'An office-wide incident.' }), action('Close memory', () => setStory(null))] }) : null, life.stories.length ? jsx('ol', { children: [...life.stories].reverse().map((s, i) => jsx('li', { children: jsxs('button', { type: 'button', onClick: () => setStory(s), children: [jsx('time', { dateTime: new Date(s.at).toISOString(), children: new Date(s.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }), ' ', s.text] }) }, `${s.at}-${i}`)) }) : jsx('p', { children: 'No headlines yet. Finish a task or open the toy drawer to give the editor something to print.' })] }) : null
+    ] }) : null
+  ] })
+}
+
 function OfficeFloor() {
   const { data, error, isLoading, refetch } = useRoster()
   const turnBusy = useTurnBusy()
@@ -3981,6 +4079,8 @@ function OfficeFloor() {
   const roomRef = useRef(null)
   const roster = Array.isArray(data?.profiles) ? data.profiles : []
   const selected = resolvePicked(roster, useValue($selected), activeProfile)
+  const inputRequests = useValue($officeInput)
+  const inputBots = roster.filter(bot => inputRequests[bot.name] && jobIsActive(jobs[bot.name]))
   const working = roster.filter(bot => jobs[bot.name] && (jobs[bot.name].state === JOB_STATES.SUBMITTING || jobs[bot.name].state === JOB_STATES.RUNNING))
   const attention = roster.filter(bot => jobs[bot.name] && (jobs[bot.name].state === JOB_STATES.FAILED || jobs[bot.name].state === JOB_STATES.UNKNOWN))
   const externalBusy = turnBusy && !working.length
@@ -4119,7 +4219,6 @@ function OfficeFloor() {
         children: [
           jsxs('div', {
             children: [
-              jsx('div', { className: 'office-kicker', children: 'Office' }),
               jsx('h1', { className: 'office-title', children: 'The Office' })
             ]
           }),
@@ -4159,12 +4258,15 @@ function OfficeFloor() {
                 className: cn('office-count', (working.length || attention.length) && 'is-link'),
                 title: working.length || attention.length ? 'Scroll to the desk' : undefined,
                 onClick: () => {
-                  const target = working[0] || attention[0]
+                  const target = inputBots[0] || working[0] || attention[0]
                   if (target) scrollToDesk(roomRef.current, target.name)
+                  if (inputBots[0]) void openBot(inputBots[0])
                 },
                 children: [
                   jsx('span', { className: cn('office-pulse', working.length && 'is-live') }),
-                  working.length
+                  inputBots.length
+                    ? headerNames(inputBots.map(bot => nameOf(bot.name)), 'needs input', 'need input')
+                    : working.length
                     ? headerNames(working.map(bot => nameOf(bot.name)), 'working', 'working')
                     : attention.length
                       ? headerNames(attention.map(bot => nameOf(bot.name)), 'needs attention', 'need attention')
@@ -4181,11 +4283,15 @@ function OfficeFloor() {
         onPointerDown: onFloor,
         children: [
           jsx('div', { className: 'office-wall', 'aria-hidden': true }),
+          jsxs('div', { className: 'office-door', 'aria-hidden': true, children: [jsx('span', { children: 'MANAGER' }), jsx('i', {})] }),
+          jsxs('div', { className: 'office-noticeboard', 'aria-hidden': true, children: [jsx('i', {}), jsx('b', {}), jsx('span', { children: 'OFFICE NOTES' })] }),
           jsx('div', {
             className: 'office-live-status',
             role: 'status',
             'aria-live': 'polite',
-            children: working.length
+            children: inputBots.length
+              ? `${inputBots.map(bot => nameOf(bot.name)).join(', ')} ${inputBots.length === 1 ? 'needs' : 'need'} input. Open their chat to respond.`
+              : working.length
               ? `${working.map(bot => nameOf(bot.name)).join(', ')} ${working.length === 1 ? 'is working' : 'are working'}`
               : attention.length
                 ? `${attention.map(bot => nameOf(bot.name)).join(', ')} ${attention.length === 1 ? 'needs' : 'need'} attention`
@@ -4206,6 +4312,7 @@ function OfficeFloor() {
           }),
           jsx(GameChairs, {}),
           jsx(Puffs, {}),
+          jsx(OfficeBoss, {}),
           isLoading
             ? jsx('div', { className: 'office-empty', children: 'Opening the office…' })
             : error
@@ -4250,7 +4357,8 @@ function OfficeFloor() {
                             })
                           }),
                           jsx(Hopscotch, { onHop: playHop, now }),
-                          jsx(OfficeBar, { count: roster.length, now })
+                          jsx(OfficeBar, { count: roster.length, now }),
+                          jsx(OfficeLifeScene, { roster, jobs, activeProfile, turnBusy, roomRef })
                         ]
                       }),
                       jsx(Wanderers, {
@@ -4264,6 +4372,7 @@ function OfficeFloor() {
                   })
         ]
       }) }),
+      roster.length ? jsx(OfficeLife, { roster, jobs, activeProfile, turnBusy, roomRef, selected }) : null,
       roster.length ? jsx(TaskBar, { roster, activeProfile }) : null,
       jsx(Planes, {})
     ]
@@ -4405,7 +4514,6 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-plant { position:absolute; top:56px; left:18px; width:18px; height:28px; border-radius:40% 40% 20% 20%; background:#3f9f5f; box-shadow: inset -3px -2px 0 rgba(0,0,0,.18); pointer-events:none; transform-origin:50% 100%; transition:transform .6s ease; z-index:1; }
 .office-plant.is-lean { transform: rotate(16deg); }
 .office-plant:after { content:""; position:absolute; left:5px; bottom:-9px; width:8px; height:12px; border-radius:1px 1px 3px 3px; background:#8b5a3a; box-shadow: inset 0 1px 0 #b0805a; }
-.office-room.is-nightclub .office-plant { background:#2f7f6f; }
 .office-clock { position:absolute; top:12px; left:50px; display:grid; justify-items:center; gap:3px; border:0; padding:0; background:transparent; color:inherit; cursor:grab; touch-action:none; z-index:5; }
 .office-clock.is-digital { top:16px; }
 .office-clock.is-free { top:auto; }
@@ -4431,10 +4539,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-hop { width:30px; height:28px; padding:0; border:2px solid #f6f2e6; border-radius:5px; background:color-mix(in srgb, Canvas 90%, transparent); color:CanvasText; font:inherit; font-size:11px; font-weight:700; cursor:pointer; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 1px 3px rgba(0,0,0,.2); }
 .office-hop:hover { border-color:var(--ui-accent); color:var(--ui-accent); }
 .office-hop.is-lit { background:color-mix(in srgb, var(--ui-accent) 40%, Canvas); border-color:var(--ui-accent); color:CanvasText; box-shadow: 0 0 0 1px rgba(0,0,0,.32), 0 0 10px color-mix(in srgb, var(--ui-accent) 55%, transparent); transition:background .12s ease, box-shadow .12s ease; }
-.office-room.is-nightclub .office-hop { border-color:#f7a8dc; box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 0 8px rgba(255,79,176,.45); }
 .office-bar { flex:0 0 148px; display:flex; flex-direction:column; align-items:center; padding:6px 10px 18px; z-index:2; }
 .office-bar-sign { font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; padding:2px 9px; border-radius:99px; margin-bottom:8px; }
-.office-room.is-nightclub .office-bar-sign { color:#f6c; text-shadow:0 0 8px #f4a; }
 .office-bar-shelf { position:relative; width:100%; height:14px; margin-top:20px; border-radius:3px 3px 0 0; background:linear-gradient(180deg, #6a4a32, #3d2a1c); box-shadow: inset 0 1px 0 #a07a55, 0 -22px 0 -1px rgba(20,28,40,.35); }
 .office-bar-shelf:before, .office-bar-shelf:after { content:none; position:absolute; bottom:3px; width:5px; height:9px; border-radius:1px 1px 0 0; background:#7ec8e8; }
 .office-bar-shelf:before { left:18%; background:#e86; }
@@ -4442,19 +4548,8 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-bar-bottles { position:absolute; left:6px; right:6px; bottom:5px; height:30px; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
 .office-bar-counter { display:flex; justify-content:flex-end; padding-right:10px; box-sizing:border-box; width:100%; height:28px; border-radius:0 0 6px 6px; background:linear-gradient(180deg, #a3734a 0 3px, #8d623e 3px, #5a3d22); box-shadow:0 6px 0 #3d2816, 0 9px 0 #c9a24a, 0 14px 10px -2px rgba(0,0,0,.35); margin-bottom:16px; }
 .office-bar-taps { position:relative; margin-top:-18px; z-index:3; filter:drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
-.office-room.is-nightclub .office-bar-counter { background:linear-gradient(180deg, #3a2448 0 3px, #2a1838 3px, #140816); box-shadow:0 6px 0 #0a0610, 0 9px 0 #48e0ff, 0 14px 10px -2px rgba(0,0,0,.45), 0 0 12px color-mix(in srgb, #f4a 35%, transparent); }
-.office-room.is-nightclub .office-bar-shelf { background:linear-gradient(180deg, #2a1838, #140816); box-shadow: inset 0 1px 0 #f4a, 0 -22px 0 -1px rgba(255,79,176,.12); }
 .office-bar-stools { display:flex; flex-wrap:wrap; justify-content:center; gap:10px 12px; width:100%; padding:10px 6px 12px; border-radius:12px; background:rgba(0,0,0,.16); box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
-.office-room.is-nightclub .office-bar-stools { background:rgba(255,79,176,.10); box-shadow: inset 0 0 0 1px rgba(255,79,176,.25); }
 .office-bar-stool { width:22px; height:18px; border-radius:6px 6px 3px 3px; background:linear-gradient(180deg, #a83a34 0 45%, #3a2a22 45%); box-shadow:0 3px 0 #241812, inset 0 1px 0 #d4665f, 0 6px 5px -1px rgba(0,0,0,.4); }
-.office-room.is-nightclub .office-bar-stool { background:#2a1830; box-shadow:0 3px 0 #120814, inset 0 1px 0 #f4a, 0 6px 5px -1px rgba(0,0,0,.5); }
-.office-room.is-pizza .office-bar-sign { color:#fff; background:#c9302c; letter-spacing:.2em; box-shadow:0 1px 0 rgba(0,0,0,.25); }
-.office-room.is-pizza .office-bar-shelf { background:linear-gradient(180deg, #e9dcc6, #cdbb9d); box-shadow: inset 0 1px 0 #fff8ea; }
-.office-room.is-pizza .office-bar-shelf:before { content:""; background:#c9302c; width:12px; height:8px; left:14%; }
-.office-room.is-pizza .office-bar-shelf:after { content:""; background:#c9302c; width:12px; height:8px; left:30%; }
-.office-room.is-pizza .office-bar-counter { justify-content:center; padding-right:0; background:linear-gradient(180deg, #ececec 0 50%, #c9302c 50% 62.5%, #ececec 62.5% 75%, #c9302c 75% 87.5%, #ececec 87.5%); box-shadow:0 6px 0 #a3a3a3, 0 12px 10px -2px rgba(0,0,0,.35); }
-.office-room.is-pizza .office-bar-stools { background:rgba(120,40,30,.14); }
-.office-room.is-pizza .office-bar-stool { background:#c9302c; box-shadow:0 3px 0 #8f1f1c, inset 0 1px 0 #ea6c66, 0 6px 5px -1px rgba(0,0,0,.4); }
 .office-pie { position:relative; margin-top:-16px; z-index:3; filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
 .office-slice { position:absolute; top:-2px; left:-12px; z-index:2; transform:rotate(-20deg); filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); animation:office-slice .6s ease-in-out infinite; }
 .office-status.is-sad { color:#c9302c; }
@@ -4467,7 +4562,6 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
 .office-game-chair.is-claimed { filter:drop-shadow(0 2px 2px rgba(0,0,0,.35)) drop-shadow(0 0 4px var(--ui-accent)); }
 .office-empty { min-height:${WALL_H + 200}px; padding:120px 20px 40px; text-align:center; color:var(--ui-text-tertiary); font-size:13px; }
 .office-desk { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 10px 10px; border:0; border-radius:16px; background:rgba(0,0,0,.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,.10); color:inherit; text-align:center; user-select:none; -webkit-user-drag:none; }
-.office-room.is-nightclub .office-desk { background:rgba(255,255,255,.07); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .office-stage { position:relative; width:100%; min-height:118px; display:flex; flex-direction:column; align-items:center; }
 .office-stage:before { content:""; position:absolute; left:14px; right:14px; top:84px; height:34px; border-radius:50%; background:radial-gradient(ellipse at 50% 50%, rgba(0,0,0,.30), rgba(0,0,0,0) 68%); pointer-events:none; }
 .office-desk-top { position:absolute; left:8px; right:8px; top:48px; height:34px; border-radius:6px; background:#8d623e; box-shadow:0 7px 0 #5a3d22, 0 8px 0 color-mix(in srgb, #000 20%, transparent), 0 14px 10px -2px rgba(0,0,0,.35); outline:1px solid color-mix(in srgb, #000 22%, transparent); z-index:1; pointer-events:none; }
@@ -4595,6 +4689,169 @@ ${Object.entries(OFFICE_SKINS).map(([name, skin]) => skinCss(name, skin)).join('
   .office-eyes { transition: none; }
   .office-pupil, .office-lid { transition: none; }
 }
+/* A warm miniature office. Controls stay on the desk rail; toys live on carpet. */
+.office-root { --office-ink:#302d28; --office-paper:#faf5e9; --office-rust:#994830; --office-radius:7px; --office-card-shadow:0 2px 6px #241d2029; background:Canvas; color:CanvasText; }
+.office-header { padding:18px 22px 14px; align-items:center; flex-wrap:wrap; }
+.office-title { font-size:24px; font-weight:750; letter-spacing:-.035em; }
+.office-head-right { flex-wrap:wrap; gap:10px; }
+.office-tool { border-radius:5px; height:30px; font-size:12px; color:CanvasText; }
+.office-room { margin:auto; width:min(calc(100% - 36px),1080px); box-sizing:border-box; flex:0 1 600px; max-height:100%; border-radius:10px; border-color:#756e5b; box-shadow:0 12px 30px #221b2038; min-height:300px; }
+.office-stage-wrap { padding:16px 0; }
+.office-grid { grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:20px; padding:20px 20px 28px; }
+.office-window { right:8%; }
+.office-desk { background:transparent; box-shadow:none; border-radius:0; }
+.office-desk-top:before { content:''; position:absolute; left:12px; right:12px; height:26px; top:34px; border-left:5px solid #473d33; border-right:5px solid #473d33; }
+.office-desk-top:after { content:''; position:absolute; left:28%; width:44%; top:8px; height:12px; background:repeating-linear-gradient(90deg,#b7b5a7 0 3px,#dedbce 3px 5px); border:3px solid #ccc9bd; border-radius:3px; transform:skewX(-8deg); }
+.office-door { position:absolute; top:4px; left:48%; width:54px; height:78px; background:#a68058; border:5px solid #715738; border-bottom:0; box-shadow:inset 3px 0 6px #3c2b2640; z-index:2; }
+.office-door span { position:absolute; left:4px; right:4px; top:17px; padding:4px 0; color:#eee0bb; background:#4e544e; text-align:center; font-size:8px; letter-spacing:.05em; }
+.office-door i { position:absolute; right:7px; top:48px; width:5px; height:5px; border-radius:50%; background:#e1c37c; }
+.office-room[data-incident=boss] .office-door { background:#423c32; border-left-width:11px; }
+.office-noticeboard { position:absolute; top:9px; left:20%; width:89px; height:50px; border:5px solid #8d6742; background:#b48d5d; transform:rotate(-1deg); }
+.office-noticeboard i,.office-noticeboard b { position:absolute; width:24px; height:27px; top:13px; left:9px; background:#f5e4a8; transform:rotate(-8deg); box-shadow:0 2px 2px #47332230; }
+.office-noticeboard b { left:46px; background:#d9e4df; transform:rotate(6deg); }
+.office-noticeboard span { display:block; font-size:7px; color:#382e20; text-align:center; margin-top:2px; font-weight:700; }
+.office-eom { left:auto; right:24%; transform:none; }
+.office-person > .office-face { position:relative; z-index:2; }
+.office-person .office-status { margin-top:1px; }
+.office-boss { position:absolute; width:42px; z-index:12; display:flex; flex-direction:column; align-items:center; pointer-events:none; }
+.office-boss .office-face { position:relative; z-index:2; }
+.office-boss-hair { position:absolute; top:2px; width:32px; height:9px; border-radius:9px 9px 2px 2px; background:#6b625a; z-index:3; }
+.office-boss-glasses { position:absolute; left:9px; top:13px; width:10px; height:8px; border:2px solid #3b3935; border-radius:3px; z-index:4; box-shadow:12px 0 0 -2px #d5ae8c,12px 0 0 0 #3b3935; }
+.office-clipboard { position:absolute; top:20px; right:-7px; width:16px; height:22px; background:#eed9aa; border:2px solid #856e47; border-radius:2px; transform:rotate(-12deg); z-index:4; }
+.office-clipboard:after { content:''; position:absolute; left:3px; right:3px; top:5px; height:1px; background:#a69c7e; box-shadow:0 4px #a69c7e,0 8px #a69c7e; }
+.office-boss-label { margin-top:5px; background:#3c4750; color:#fff5dc; padding:4px 7px; border-radius:3px; white-space:nowrap; font-size:10px; }
+.office-coffee-rug { position:absolute; left:5%; top:15px; width:34%; bottom:24px; background:#bdab85; border:4px solid #d7c49f; border-radius:8px; box-shadow:0 2px 5px #22323730; transform:rotate(-1deg); }
+.office-lounge-sofa { position:absolute; right:9%; top:0; width:105px; height:42px; border:9px solid #6c7770; border-bottom-width:13px; border-radius:12px 12px 5px 5px; background:#88948b; box-shadow:0 6px 0 -2px #493f35,0 9px 6px #23303b30; }
+.office-lounge-sofa i,.office-lounge-sofa b { position:absolute; top:6px; left:5px; width:42px; height:22px; border-radius:5px; background:#9aa49a; border-bottom:3px solid #78847c; }
+.office-lounge-sofa b { left:auto; right:5px; }
+.office-furniture[data-office-prop=coffee]:before { content:''; position:absolute; width:65px; height:28px; top:32px; background:#ac885f; border-top:5px solid #e1cbaa; border-bottom:5px solid #725d48; border-radius:2px; }
+.office-furniture[data-office-prop=coffee] .office-object { transform:translateY(-10px); }
+.office-floor { padding-bottom:158px; }
+.office-plate { background:#f5eddb; color:#38332a; border-radius:3px 3px 6px 6px; border-bottom:3px solid #b39b72; }
+.office-name { font-weight:750; color:#38332a; }
+.office-handle { color:#6b5d46; }
+.office-say { font-size:11px; padding:8px; box-shadow:0 3px 7px #261f2526; }
+.office-desk-top { border-radius:5px; }
+.office-bar-sign { background:#994830; color:#fff8e6; border-radius:3px; padding:6px 12px; letter-spacing:.08em; transform:rotate(-3deg); }
+.office-bar-counter { justify-content:center; padding:0; background:#d8bea0; box-shadow:0 6px 0 #8c6545,0 12px 9px #251b2633; }
+.office-bar-shelf { background:#c9a781; box-shadow:inset 0 1px 0 #ecd6ba; }
+.office-taskbar { padding:12px 20px; border-top:1px solid var(--ui-stroke-secondary); }
+.office-task-input { border-radius:5px; min-height:36px; caret-color:var(--ui-accent); }
+.office-root :focus-visible { outline:2px solid var(--ui-accent,#994830); outline-offset:3px; }
+.office-root ::selection { background:#e5b67b; color:#302d28; }
+.office-root { scrollbar-color:#9b8b71 transparent; scrollbar-width:thin; }
+.office-clock-lcd,.office-paper-date { font-variant-numeric:tabular-nums; }
+.office-life { position:relative; flex-shrink:0; color:CanvasText; z-index:20; }
+.office-life-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:12px 20px; }
+.office-life-caption { font-size:11px; color:var(--ui-text-secondary); margin-right:auto; }
+.office-life-button,.office-panel-close { border:1px solid var(--ui-stroke-secondary,#c7bca9); border-radius:5px; padding:6px 10px; background:Canvas; color:CanvasText; font:inherit; font-size:12px; cursor:pointer; }
+.office-life-button:hover,.office-panel-close:hover { background:color-mix(in srgb,CanvasText 7%,Canvas); }
+.office-life-button[aria-expanded=true],.office-life-button[aria-pressed=true] { background:#994830; border-color:#994830; color:#fff8ee; }
+.office-life-button:disabled { opacity:.5; cursor:default; }
+.office-chaos { display:flex; gap:6px; align-items:center; font-size:11px; }
+.office-life select { background:Canvas; color:CanvasText; border:1px solid var(--ui-stroke-secondary,#c7bca9); border-radius:4px; padding:5px; font:inherit; }
+.office-life-panel { position:absolute; bottom:100%; right:18px; width:min(440px,calc(100vw - 60px)); max-height:min(420px,60vh); overflow:auto; padding:22px; background:Canvas; color:CanvasText; border:1px solid var(--ui-stroke-secondary,#c7bca9); border-radius:9px; box-shadow:0 12px 32px #15101140; }
+.office-life-panel h2 { margin:0 45px 8px 0; font-size:19px; line-height:1.2; letter-spacing:-.025em; }
+.office-life-panel p { margin:8px 0 16px; font-size:12px; line-height:1.6; }
+.office-panel-close { float:right; font-size:11px; }
+.office-toy-list,.office-furniture-list { display:flex; flex-wrap:wrap; gap:8px; }
+.office-personality-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; font-size:13px; }
+.office-personality-row span { overflow-wrap:anywhere; min-width:0; }
+.office-personality-row select { max-width:65%; }
+.office-incident-caption { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:0 20px 10px; padding:10px 12px; background:var(--office-paper); color:var(--office-ink); border-radius:5px; font-size:12px; }
+.office-incident-caption strong { font-size:12px; }
+.office-incident-caption span { flex:1; min-width:160px; }
+.office-newspaper { background:var(--office-paper); color:var(--office-ink); padding:18px; margin-top:30px; }
+.office-newspaper h2 { font-family:Georgia,serif; font-size:30px; margin-right:0; border-bottom:3px double #8c8068; padding-bottom:12px; }
+.office-newspaper ol { list-style:none; padding:0; margin:0; }
+.office-newspaper li { border-top:1px solid #d7cdb8; }
+.office-newspaper li button { text-align:left; padding:10px 0; border:0; background:transparent; color:inherit; cursor:pointer; font:inherit; font-size:12px; line-height:1.5; }
+.office-newspaper time { font-size:10px; color:#6c604c; }
+.office-memory { border-top:2px solid #8c8068; padding-top:12px; }
+.office-memory-scene { position:relative; height:140px; overflow:hidden; background:#587e8f; border-radius:4px; margin-bottom:12px; }
+.office-memory-scene .office-object { transform:scale(.65); }
+.office-life-scene { position:absolute; inset:auto 0 0; height:150px; pointer-events:none; z-index:6; }
+.office-furniture { position:absolute; width:66px; height:60px; transform:translate(-50%,-50%); padding:0; border:0; background:transparent; color:#fff9e9; cursor:pointer; pointer-events:auto; touch-action:none; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.office-furniture-label { position:absolute; top:100%; padding:3px 5px; background:#302d28; border-radius:3px; font-size:10px; white-space:nowrap; opacity:0; transition:opacity .15s; }
+.office-furniture:hover .office-furniture-label,.office-furniture:focus-visible .office-furniture-label,.is-arranging .office-furniture-label { opacity:1; }
+.is-arranging .office-furniture { outline:1px dashed #ffefd3; outline-offset:5px; cursor:move; }
+.office-floor-plaque { position:absolute; bottom:13px; left:50%; transform:translateX(-50%); color:#fff8e8; opacity:.8; font-size:10px; white-space:nowrap; }
+.office-object { width:42px; height:42px; position:relative; display:inline-block; filter:drop-shadow(0 4px 2px #16232d50); }
+.art-mug { width:25px; height:25px; margin-top:15px; background:#e9d5ae; border-radius:2px 2px 8px 8px; border-top:3px solid #70492f; }
+.art-mug i { right:-8px; top:2px; width:12px; height:14px; border:4px solid #e9d5ae; border-radius:5px; }
+.art-parcel { width:25px; height:20px; background:#c9a16c; border-top:5px solid #dfbc8c; border-bottom:3px solid #9d7547; border-radius:2px; }
+.art-parcel i { left:10px; top:-5px; width:5px; height:22px; background:#f0dbb4; }
+.office-input-request { padding:7px 9px; border:1px solid #a65d36; background:#fff0cc; color:#5d3823; font:inherit; font-size:11px; border-radius:4px; cursor:pointer; }
+.office-person.is-waiting:after { content:''; position:absolute; right:-6px; top:-8px; width:8px; height:26px; border-radius:6px; background:#e8ba80; transform:rotate(18deg); box-shadow:0 2px 3px #332b2430; }
+.office-person.is-waiting .office-face { animation:none; }
+.office-person.is-waiting .office-status { color:#fff5dc; background:#754127; }
+.office-object i,.office-object b,.office-object em,.office-object small { position:absolute; display:block; box-sizing:border-box; }
+.art-coffee { width:34px; height:42px; background:#dbc8aa; border-radius:5px 5px 2px 2px; border-bottom:5px solid #655746; }
+.art-coffee i { top:6px; left:5px; width:24px; height:10px; background:#3c4844; border-radius:2px; }
+.art-coffee b { top:16px; left:6px; width:22px; height:18px; background:#4e4035; }
+.art-coffee em { top:23px; left:11px; width:12px; height:11px; border-radius:1px 1px 5px 5px; background:#fff3d1; }
+.art-coffee small { top:24px; left:21px; width:6px; height:7px; border:2px solid #fff3d1; border-radius:3px; }
+.art-fan i { top:0; left:5px; width:32px; height:32px; border:3px solid #ded8bc; border-radius:50%; background:#638e8a; }
+.art-fan b { top:7px; left:12px; width:18px; height:18px; border:6px dotted #ede5ce; border-radius:50%; animation:office-fan-spin 2s linear infinite; }
+.art-fan em { left:18px; top:31px; width:6px; height:9px; background:#c9b993; }
+.art-fan small { top:38px; left:8px; width:27px; height:5px; border-radius:3px; background:#ede5ce; }
+.art-chair i { top:0; left:7px; width:28px; height:25px; border-radius:7px; background:#b56e45; border:3px solid #8f5137; }
+.art-chair b { top:23px; left:3px; width:36px; height:10px; background:#cb8656; border-radius:4px; }
+.art-chair em { top:32px; left:19px; width:4px; height:8px; background:#d6d4c8; }
+.art-chair small { top:39px; left:7px; width:28px; height:4px; background:#302d28; border-radius:3px; }
+.art-bin { width:28px; height:32px; margin-top:8px; border:3px solid #d7d3bb; border-radius:2px 2px 7px 7px; background:repeating-linear-gradient(90deg,#788b84 0 3px,#a4ada0 3px 5px); }
+.art-bin i,.art-bin b { width:14px; height:16px; top:-8px; left:2px; background:#fff0d1; transform:rotate(-18deg); }
+.art-bin b { left:11px; top:-5px; transform:rotate(16deg); }
+.art-cat { height:26px; width:44px; margin-top:16px; background:#dfa969; border-radius:45% 50% 40% 40%; }
+.art-cat i { width:22px; height:21px; left:0; top:-7px; background:#e4b276; border-radius:5px 5px 40% 40%; }
+.art-cat i:before,.art-cat i:after { content:''; position:absolute; top:-7px; border-bottom:10px solid #e4b276; border-left:5px solid transparent; border-right:5px solid transparent; }
+.art-cat i:after { right:0; }
+.art-cat b { left:5px; top:1px; width:4px; height:2px; background:#4b3929; box-shadow:8px 0 #4b3929; }
+.art-cat em { right:-8px; top:5px; width:20px; height:18px; border:5px solid #b78046; border-radius:50%; border-left-color:transparent; }
+.art-certificate { width:34px; height:40px; border:4px solid #986e3d; background:#fff0ce; transform:rotate(-5deg); }
+.art-certificate i { top:8px; left:6px; width:14px; height:2px; background:#aa936d; box-shadow:0 5px #aa936d,0 10px #aa936d; }
+.art-certificate b { bottom:3px; right:4px; width:8px; height:8px; border-radius:50%; background:#a6513b; }
+.art-aquarium { width:52px; height:35px; background:#81bdc5; border:3px solid #d8ccae; border-bottom:6px solid #b2915f; border-radius:4px; }
+.art-aquarium i { left:10px; top:10px; width:13px; height:8px; border-radius:50%; background:#eeab57; animation:office-fish 4s ease-in-out infinite alternate; }
+.art-aquarium b { right:6px; bottom:0; width:8px; height:20px; border-radius:80% 0; background:#518578; }
+.art-button { width:35px; height:24px; margin-top:18px; background:#5c5d55; border-radius:5px; }
+.art-button i { top:-8px; left:6px; width:23px; height:23px; border-radius:50%; background:#b53e31; border-bottom:5px solid #772d27; }
+.art-pizza-box { width:43px; height:32px; background:#d7b681; border:3px solid #997849; border-radius:3px; transform:rotate(-8deg); }
+.art-pizza-box i { top:4px; left:9px; width:18px; height:18px; border-radius:50%; background:#e7ab50; border:3px solid #b55936; }
+.office-keepsakes { position:absolute; left:3px; top:50px; display:flex; gap:0; z-index:2; pointer-events:none; }
+.office-keepsakes .office-object { transform:scale(.35); transform-origin:bottom left; margin-right:-25px; }
+.office-keepsakes .art-mug { margin-right:-13px; }
+.office-root[data-office-hidden=true] * { animation-play-state:paused !important; }
+.office-banter { position:absolute; bottom:calc(100% + 10px); left:50%; transform:translateX(-50%) rotate(-2deg); max-width:150px; min-width:95px; background:#fff7df; color:#423622; border-radius:7px 7px 7px 0; box-shadow:0 3px 7px #18252d30; padding:7px 9px; font-size:11px; line-height:1.35; z-index:10; pointer-events:none; }
+.quirk-quiet.is-cheers .office-face { animation:none; transform:rotate(-5deg); }
+.quirk-champion.is-cheers .office-face { animation:office-victory .6s ease-in-out infinite; }
+.quirk-tidy.is-wander .office-face { transform:rotate(0); }
+.quirk-curious.is-wander .office-face { transform:rotate(7deg); }
+.office-incident-art { position:absolute; left:40%; top:58%; width:160px; height:80px; }
+.office-visiting-object { display:block; position:absolute; width:36px; height:36px; animation:office-toy-travel 4s ease-in-out infinite alternate; }
+.incident-ball .office-visiting-object { border-radius:50%; background:conic-gradient(#e5bc60 0 90deg,#e8e4ca 90deg 180deg,#ba6345 180deg 270deg,#5b9294 270deg); box-shadow:0 4px 7px #172b3440; }
+.incident-mouse .office-visiting-object { width:27px; height:17px; background:#d2c9b8; border-radius:70% 50% 50% 70%; border-right:7px solid #a4937e; }
+.incident-mouse .office-visiting-object:after { content:''; position:absolute; right:-25px; top:9px; width:20px; height:9px; border-top:2px solid #e0baaf; border-radius:50%; }
+.incident-ufo .office-visiting-object { width:55px; height:19px; border-radius:50%; background:#b9c9b3; border-bottom:5px solid #6d8f82; top:-80px; }
+.incident-ufo .office-visiting-object:before { content:''; position:absolute; left:16px; top:-13px; width:25px; height:18px; background:#a6d9ce; border-radius:50% 50% 0 0; }
+.incident-delivery .office-visiting-object { width:50px; height:70px; background:#6e9566; border-radius:70% 15% 60% 20%; border-bottom:25px solid #bc825d; animation:office-plant-arrives 4s ease-out forwards; }
+.incident-printer .office-incident-art i { position:absolute; width:22px; height:28px; background:#fff1d8; border-top:5px solid #cfbda0; animation:office-paper-storm 3s ease-out infinite; animation-delay:calc(var(--n) * -.5s); }
+.incident-printer .office-visiting-object { width:46px; height:28px; background:#dfd8c3; border-top:7px solid #766f60; border-bottom:5px solid #a59b85; border-radius:4px; animation:none; }
+.incident-printer.phase-1 .art-chair,.incident-mouse.phase-1 .art-cat { animation:office-toy-travel 3s ease-in-out infinite alternate; }
+.incident-ball.phase-1 .art-fan b,.incident-printer.phase-1 .art-fan b { animation-duration:.25s; }
+.office-room[data-incident=gravity] .office-person:not(.is-think) .office-face,.incident-gravity .office-object { animation:office-zero-g 4s ease-in-out infinite alternate; }
+.office-room[data-incident=ice] .office-wander-layer .office-person:not(.is-think) .office-face,.incident-ice .art-chair { animation:office-skate 3s ease-in-out infinite alternate; }
+.office-room[data-incident=ufo] .office-eom { animation:office-zero-g 4s ease-in-out infinite alternate; }
+@keyframes office-fan-spin { to { transform:rotate(360deg); } }
+@keyframes office-fish { to { transform:translateX(15px); } }
+@keyframes office-victory { 50% { transform:translateY(-12px) rotate(12deg); } }
+@keyframes office-toy-travel { from { transform:translate(-65px,20px) rotate(-15deg); } to { transform:translate(100px,-25px) rotate(20deg); } }
+@keyframes office-paper-storm { from { transform:translate(0,0) rotate(-20deg); opacity:1; } to { transform:translate(calc(var(--n) * 35px - 70px),-90px) rotate(100deg); opacity:0; } }
+@keyframes office-plant-arrives { from { transform:scale(.4); } to { transform:scale(1.5) translateY(-20px); } }
+@keyframes office-zero-g { to { transform:translateY(-28px) rotate(12deg); } }
+@keyframes office-skate { to { transform:translateX(25px) rotate(-15deg); } }
+@media (max-width:700px) { .office-header { padding:12px; gap:8px; } .office-room { margin:0 8px; } .office-title { font-size:20px; } .office-life-caption { display:none; } .office-life-toolbar { padding:8px 12px; } .office-chaos { width:100%; } .office-life-panel { right:8px; padding:16px; width:calc(100vw - 52px); } .office-recap { display:none; } }
+@media (prefers-reduced-motion:reduce) { .office-life-scene *, .office-keepsakes *, .office-memory-scene *, .office-room[data-incident] .office-face, .office-room[data-incident] .office-eom, .quirk-champion.is-cheers .office-face { animation:none !important; transition:none !important; } }
 `
   let style = document.getElementById('hermes-office-css')
 
@@ -4635,8 +4892,8 @@ const plugin = {
       if (typeof ritualHour === 'number') $ritual.set({ hour: ritualHour, at: 0 })
       const trophies = ctx.storage?.get?.('trophies', null)
       if (trophies && typeof trophies === 'object' && !Array.isArray(trophies)) $trophies.set(trophies)
-      const backdrop = ctx.storage?.get?.('backdrop', null)
-      if (backdropNames().includes(backdrop)) $backdrop.set(backdrop)
+      $backdrop.set('carpet')
+      $officeLife.set(normalizeOfficeLife(ctx.storage?.get?.('officeLife', null)))
       const jobs = normalizeJobs(ctx.storage?.get?.(JOBS_STORAGE_KEY, null))
       $jobs.set(jobs)
       for (const row of Object.values(jobs)) {

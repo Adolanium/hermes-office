@@ -181,7 +181,7 @@ test('every room skin is a flat wall band plus a seamless floor tile', () => {
   const { WALL_H, OFFICE_SKINS, skinCss } = loadSkins()
   const names = Object.keys(OFFICE_SKINS)
 
-  assert.deepEqual(names, ['carpet', 'loft', 'garden', 'nightclub', 'pizza'])
+  assert.deepEqual(names, ['carpet'])
 
   for (const name of names) {
     const skin = OFFICE_SKINS[name]
@@ -209,14 +209,14 @@ test('svgUri collapses whitespace and encodes the markup', () => {
   assert.equal(uri, `data:image/svg+xml;charset=utf-8,${encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg'><rect width='1' height='1'/></svg>")}`)
 })
 
-test('nextBackdrop walks the five room skins', () => {
+test('old room choices resolve to the single carpet office', () => {
   const { backdropNames, nextBackdrop } = loadHelpers()
 
-  assert.equal(backdropNames().join(','), 'carpet,loft,garden,nightclub,pizza')
-  assert.equal(nextBackdrop('carpet'), 'loft')
-  assert.equal(nextBackdrop('nightclub'), 'pizza')
+  assert.equal(backdropNames().join(','), 'carpet')
+  assert.equal(nextBackdrop('carpet'), 'carpet')
+  assert.equal(nextBackdrop('nightclub'), 'carpet')
   assert.equal(nextBackdrop('pizza'), 'carpet')
-  assert.equal(nextBackdrop('nope'), 'loft')
+  assert.equal(nextBackdrop('nope'), 'carpet')
 })
 
 test('first bot to the pizza counter gets the slice, the rest get nothing', () => {
@@ -242,12 +242,12 @@ test('first bot to the pizza counter gets the slice, the rest get nothing', () =
   assert.equal(claimPizza(null, 'solo', 10).won, true)
 })
 
-test('pizza wiring: rounds start on tasks, claims happen at the counter in the parlor', () => {
+test('pizza wiring: rounds start on tasks, claims happen at the carpet office counter', () => {
   assert.match(source, /function startRound\(name, roundToken = null\)/)
   assert.match(source, /\$pizza\.set\(freshPizza\(Date\.now\(\)\)\)/)
-  assert.match(source, /\$backdrop\.get\(\) === 'pizza'/)
+  assert.doesNotMatch(source, /\$backdrop\.get\(\) === 'pizza'/)
   assert.match(source, /claimPizza\(\$pizza\.get\(\), name, now\)/)
-  assert.match(source, /parlor \? 'Pizza' : 'Bar'/)
+  assert.match(source, /children: 'Pizza break'/)
   assert.match(source, /if \(pizza\) \{\s*return 'pizza!'/)
   assert.match(source, /if \(noPizza\) \{\s*return 'no pizza'/)
 })
@@ -518,7 +518,7 @@ test('storage hydration is synchronous and legacy keys remain unchanged', () => 
   assert.match(source, /ctx\.storage\?\.get\?\.\('trophies', null\)/)
   assert.match(source, /ctx\.storage\?\.get\?\.\(JOBS_STORAGE_KEY, null\)/)
   assert.doesNotMatch(source, /Promise\.resolve\(ctx\.storage/)
-  for (const key of ['seats', 'clock', 'clockPos', 'lastTask', 'month', 'week', 'hintStage', 'news', 'ritualHour', 'trophies', 'backdrop']) {
+  for (const key of ['seats', 'clock', 'clockPos', 'lastTask', 'month', 'week', 'hintStage', 'news', 'ritualHour', 'trophies', 'officeLife']) {
     assert.match(source, new RegExp(`get\\?\\.\\('${key}'`), `${key} still hydrates under its legacy key`)
   }
 })
