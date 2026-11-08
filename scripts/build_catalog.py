@@ -41,9 +41,11 @@ def build(check=False):
         "provides_tools": [], "provides_hooks": [],
         "provides_middleware": [], "requires_env": [],
     }
-    # JSON is valid YAML and keeps this build dependency-free.
+    # Block-style YAML with JSON scalars: dependency-free, and it has the `name:` line Hermes
+    # Desktop reads the package name from. A JSON manifest has none, so Desktop named the
+    # desktop half after the `catalog/` folder instead (#1).
     outputs = {
-        "catalog/plugin.yaml": json.dumps(manifest, indent=2) + "\n",
+        "catalog/plugin.yaml": "".join(f"{key}: {json.dumps(value)}\n" for key, value in manifest.items()),
         "catalog/__init__.py": '"""Desktop package. Electron loads desktop/plugin.js."""\n\n\ndef register(ctx):\n    """No Agent tools or hooks; enable the Desktop component in Capabilities."""\n',
         "catalog/desktop/plugin.js": source,
     }
