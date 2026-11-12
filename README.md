@@ -117,4 +117,4 @@ continue to use the existing root files.
 For development, edit the root files, then run `python scripts/build_catalog.py`.
 Commit the resulting `catalog/` files. CI runs `python scripts/build_catalog.py --check`
 to keep the package current, including any companion files. Catalog packaging
-releases use `catalog-v0.1.0-1` and are not marked as the latest standalone release.
+releases use `catalog-v0.1.0-2` and are not marked as the latest standalone release.
